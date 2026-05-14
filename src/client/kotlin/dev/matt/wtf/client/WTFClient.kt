@@ -502,15 +502,25 @@ object WTFClient : ClientModInitializer {
         val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
         val hash = fingerprintFromItem(stack) ?: ""
         val uuid = getItemUUID(stack)
-        val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: ""
+        val slotIdx = if (hand == InteractionHand.MAIN_HAND) player.inventory.selectedSlot + 36 else 45
+        val locKey = indexToKey(slotIdx)
         
-        // Priority 1: Exact UUID or Hash match
-        var resolvedKey = uuid ?: findPlacedKey(player, pos)
+        // Priority 1: Deterministic slot-based match (Most reliable)
+        var resolvedKey = invMoods.entries.firstOrNull { it.value.loc == locKey }?.key
         
-        // Priority 2: Reconciliation fallback
+        // Priority 2: Check if pickupScan already moved this specific slot's item to transit
         if (resolvedKey == null) {
+            resolvedKey = transitMoods.entries.firstOrNull { it.value.loc == locKey && it.value.from == "inv→transit" }?.key
+        }
+
+        // Priority 3: UUID from stack (if server didn't strip it)
+        if (resolvedKey == null) resolvedKey = uuid
+        
+        // Priority 4: Fallback to hash/name match (If slot history is lost)
+        if (resolvedKey == null) {
+            val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: ""
             val plausibleMatches = transitMoods.filterValues { it.type == type && (it.name == stackName || stackName.isEmpty()) }
-            val matchKey = if (plausibleMatches.isNotEmpty()) {
+            resolvedKey = if (plausibleMatches.isNotEmpty()) {
                 val happyMatches = plausibleMatches.filterValues { it.happy }
                 if (happyMatches.isNotEmpty()) {
                     happyMatches.keys.firstOrNull { happyMatches[it]?.contentHash == hash } ?: happyMatches.keys.first()
@@ -518,26 +528,18 @@ object WTFClient : ClientModInitializer {
                     plausibleMatches.keys.first()
                 }
             } else null
-
-            if (matchKey != null) {
-                resolvedKey = matchKey
-                log("onShulkerPlaced: recon match transit→block, uuid=$resolvedKey")
-            }
         }
 
-        if (resolvedKey == null) {
-            // New shulker placed without prior tracking
-            resolvedKey = uuid ?: java.util.UUID.randomUUID().toString()
-        }
-
-        val entry = invMoods.remove(resolvedKey) ?: transitMoods.remove(resolvedKey) ?: blockMoods[resolvedKey]
+        // Final Fallback: New shulker
+        val finalUUID = resolvedKey ?: java.util.UUID.randomUUID().toString()
+        val entry = invMoods.remove(finalUUID) ?: transitMoods.remove(finalUUID) ?: blockMoods[finalUUID]
         
         val loc = blockLocation(pos, player.level())
         val be = player.level().getBlockEntity(pos) as? BaseContainerBlockEntity
         
         if (be != null) {
             val uuidTag = CompoundTag()
-            uuidTag.putString("wtf:uuid", resolvedKey)
+            uuidTag.putString("wtf:uuid", finalUUID)
             val patch = DataComponentPatch.builder()
                 .set(DataComponents.CUSTOM_DATA, CustomData.of(uuidTag))
                 .build()
@@ -555,15 +557,15 @@ object WTFClient : ClientModInitializer {
             loc = loc,
             name = displayName,
             happy = entry?.happy ?: false,
-            uuid = resolvedKey,
+            uuid = finalUUID,
             contentHash = blockHash,
             from = "place",
             type = type
         )
         
-        blockMoods[resolvedKey] = newState
+        blockMoods[finalUUID] = newState
         if (newState.happy) notify("§aplaced§f → §eblock§f §7(${newState.name})§f")
-        log("shulker placed: blockMoods updated ($loc, name=${newState.name}, uuid=$resolvedKey)")
+        log("shulker placed: blockMoods updated ($loc, name=${newState.name}, uuid=$finalUUID, from_slot=$locKey)")
         save()
     }
 
