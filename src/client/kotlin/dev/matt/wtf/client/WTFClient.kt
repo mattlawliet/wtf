@@ -431,12 +431,24 @@ object WTFClient : ClientModInitializer {
             }
 
             // Fallback 2: Robust Reconciliation
-            val plausibleMatches = transitMoods.filterValues { it.type == type }
-            if (plausibleMatches.size == 1) {
-                val matchKey = plausibleMatches.keys.first()
+            val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: ""
+            val plausibleMatches = transitMoods.filterValues { it.type == type && (it.name == stackName || stackName.isEmpty()) }
+            
+            val matchKey = if (plausibleMatches.isNotEmpty()) {
+                val happyMatches = plausibleMatches.filterValues { it.happy }
+                if (happyMatches.isNotEmpty()) {
+                    // Prioritize matching hash if multiple happy ones exist, or just pick the oldest in transit
+                    happyMatches.keys.firstOrNull { happyMatches[it]?.contentHash == hash } ?: happyMatches.keys.first()
+                } else {
+                    plausibleMatches.keys.first()
+                }
+            } else null
+
+            if (matchKey != null) {
                 val entry = transitMoods.remove(matchKey)!!
                 val finalUUID = stackUUID ?: ensureItemUUID(stack)
                 invMoods[finalUUID] = entry.copy(loc = locKey, uuid = finalUUID, from = "pickup:recon:transit→inv", contentHash = hash, type = type)
+                log("pickupScan: recon match transit→inv, uuid=$finalUUID at $locKey (was $matchKey)")
                 if (entry.happy) notify("§7transit§f → §ainv§f §7(${entry.name})§7 §7(reconciled)§f")
                 changed = true
                 continue
@@ -483,23 +495,32 @@ object WTFClient : ClientModInitializer {
     }
 
     @JvmStatic
-    fun onShulkerPlaced(player: Player, pos: BlockPos, hand: InteractionHand) {
+    fun onShulkerPlaced(player: Player, pos: BlockPos, hand: InteractionHand, stack: ItemStack) {
         if (!player.level().isClientSide) return
-        val stack = player.getItemInHand(hand)
         if (stack.isEmpty || !isShulkerItem(stack)) return
 
         val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
         val hash = fingerprintFromItem(stack) ?: ""
         val uuid = getItemUUID(stack)
+        val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: ""
         
         // Priority 1: Exact UUID or Hash match
         var resolvedKey = uuid ?: findPlacedKey(player, pos)
         
         // Priority 2: Reconciliation fallback
         if (resolvedKey == null) {
-            val plausibleMatches = transitMoods.filterValues { it.type == type }
-            if (plausibleMatches.size == 1) {
-                resolvedKey = plausibleMatches.keys.first()
+            val plausibleMatches = transitMoods.filterValues { it.type == type && (it.name == stackName || stackName.isEmpty()) }
+            val matchKey = if (plausibleMatches.isNotEmpty()) {
+                val happyMatches = plausibleMatches.filterValues { it.happy }
+                if (happyMatches.isNotEmpty()) {
+                    happyMatches.keys.firstOrNull { happyMatches[it]?.contentHash == hash } ?: happyMatches.keys.first()
+                } else {
+                    plausibleMatches.keys.first()
+                }
+            } else null
+
+            if (matchKey != null) {
+                resolvedKey = matchKey
                 log("onShulkerPlaced: recon match transit→block, uuid=$resolvedKey")
             }
         }

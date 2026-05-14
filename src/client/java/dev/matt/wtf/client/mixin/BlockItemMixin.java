@@ -20,6 +20,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public class BlockItemMixin {
     @Unique
     private BlockPos wtf$placePos;
+    @Unique
+    private ItemStack wtf$stack;
 
     @Inject(method = "useOn", at = @At("HEAD"))
     private void onUseOnHead(UseOnContext context, CallbackInfoReturnable<InteractionResult> cir) {
@@ -27,8 +29,10 @@ public class BlockItemMixin {
         String itemPath = BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
         if (!itemPath.contains("shulker_box")) {
             wtf$placePos = null;
+            wtf$stack = null;
             return;
         }
+        wtf$stack = stack.copy();
         BlockPos clickedPos = context.getClickedPos();
         Direction clickedFace = context.getClickedFace();
         BlockState clickedState = context.getLevel().getBlockState(clickedPos);
@@ -42,16 +46,19 @@ public class BlockItemMixin {
     @Inject(method = "useOn", at = @At("RETURN"))
     private void onUseOnReturn(UseOnContext context, CallbackInfoReturnable<InteractionResult> cir) {
         InteractionResult result = cir.getReturnValue();
-        if (!result.consumesAction() || wtf$placePos == null) {
+        if (!result.consumesAction() || wtf$placePos == null || wtf$stack == null) {
             wtf$placePos = null;
+            wtf$stack = null;
             return;
         }
         Player player = context.getPlayer();
         if (player == null) {
             wtf$placePos = null;
+            wtf$stack = null;
             return;
         }
-        WTFClient.onShulkerPlaced(player, wtf$placePos, context.getHand());
+        WTFClient.onShulkerPlaced(player, wtf$placePos, context.getHand(), wtf$stack);
         wtf$placePos = null;
+        wtf$stack = null;
     }
 }
