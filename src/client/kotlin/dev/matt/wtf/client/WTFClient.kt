@@ -548,7 +548,7 @@ object WTFClient : ClientModInitializer {
     @JvmStatic
     fun onShulkerPlaced(player: Player, pos: BlockPos, hand: InteractionHand) {
         if (!player.level().isClientSide) return
-        val stack = player.inventory.getItem(if (hand == InteractionHand.MAIN_HAND) player.inventory.selectedSlot else 40)
+        val stack = player.getItemInHand(hand)
         if (stack.isEmpty || !isShulkerItem(stack)) return
 
         val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
@@ -563,13 +563,16 @@ object WTFClient : ClientModInitializer {
             val plausibleMatches = transitMoods.filterValues { it.type == type }
             if (plausibleMatches.size == 1) {
                 resolvedKey = plausibleMatches.keys.first()
-                log("onShulkerPlaced: recon match transit→block, uuid=$resolvedKey (was $resolvedKey)")
+                log("onShulkerPlaced: recon match transit→block, uuid=$resolvedKey")
             }
         }
 
-        if (resolvedKey == null) return
+        if (resolvedKey == null) {
+            // New shulker placed without prior tracking
+            resolvedKey = uuid ?: java.util.UUID.randomUUID().toString()
+        }
 
-        val entry = invMoods.remove(resolvedKey) ?: transitMoods.remove(resolvedKey) ?: return
+        val entry = invMoods.remove(resolvedKey) ?: transitMoods.remove(resolvedKey) ?: blockMoods[resolvedKey]
         
         val loc = blockLocation(pos, player.level())
         val be = player.level().getBlockEntity(pos) as? BaseContainerBlockEntity
@@ -588,9 +591,21 @@ object WTFClient : ClientModInitializer {
             fingerprintContainer(be, bType, be.components().get(DataComponents.CUSTOM_NAME))
         } else hash
         
-        blockMoods[resolvedKey] = entry.copy(loc = loc, contentHash = blockHash, from = "place:inv→block", type = type)
-        if (entry.happy) notify("§ainv§f → §eblock§f §7(${entry.name})§f")
-        log("shulker placed: inv→block (${entry.name}, uuid=$resolvedKey, type=$type)")
+        val displayName = if (stack.has(DataComponents.CUSTOM_NAME)) stack.get(DataComponents.CUSTOM_NAME)?.string ?: "???" else entry?.name ?: "Shulker Box"
+        
+        val newState = ShulkerState(
+            loc = loc,
+            name = displayName,
+            happy = entry?.happy ?: false,
+            uuid = resolvedKey,
+            contentHash = blockHash,
+            from = "place",
+            type = type
+        )
+        
+        blockMoods[resolvedKey] = newState
+        if (newState.happy) notify("§aplaced§f → §eblock§f §7(${newState.name})§f")
+        log("shulker placed: blockMoods updated ($loc, name=${newState.name}, uuid=$resolvedKey)")
         save()
     }
 
