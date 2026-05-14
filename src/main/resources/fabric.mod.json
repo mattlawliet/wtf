@@ -1,0 +1,45 @@
+{
+	"schemaVersion": 1,
+	"id": "wtf",
+	"version": "${version}",
+	"name": "WTF",
+	"description": "This is an example description! Tell everyone what your mod is about!",
+	"authors": [
+		"Me!"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/wtf/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			{
+				"value": "dev.matt.wtf.WTF",
+				"adapter": "kotlin"
+			}
+		],
+		"client": [
+			{
+				"value": "dev.matt.wtf.client.WTFClient",
+				"adapter": "kotlin"
+			}
+		]
+	},
+	"mixins": [
+		"wtf.mixins.json",
+		{
+			"config": "wtf.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.2",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*",
+		"fabric-language-kotlin": "*"
+	}
+}
