@@ -372,42 +372,30 @@ object WTFClient : ClientModInitializer {
 
         if (currentSlot != prevSelectedSlot) {
             prevSelectedSlot = currentSlot
-            scanTimer = 0
-            quickSlotScan(player, 36 + currentSlot)
-            return
+            // No return here - we want to scan the full inventory immediately when the selection changes
         }
 
-        tickCounter++
-        if (tickCounter % 2 != 0) return
-
         val currentFp = (0 until inv.slots.size).map { ItemStack.hashItemAndComponents(inv.getSlot(it).item) }.hashCode()
-        scanTimer++
-        if (currentFp == prevInvFingerprint && scanTimer < 5) return
+        if (currentFp == prevInvFingerprint) return
         prevInvFingerprint = currentFp
-        scanTimer = 0
         
         var changed = false
         if (debugVerbose) log("pickupScan: scan start, ${inv.slots.size} slots")
         for (i in 0 until inv.slots.size) {
             val stack = inv.getSlot(i).item
             if (stack.isEmpty || !isShulkerItem(stack)) continue
-            if (!stack.has(DataComponents.CONTAINER)) {
-                if (debugVerbose) log("pickupScan: slot $i is shulker but NO CONTAINER")
-                continue
-            }
-
-            val hash = fingerprintFromItem(stack)!!
+            
+            // Fast-path: check if we already track this stack by its unique hash
+            val hash = fingerprintFromItem(stack) ?: continue
             val stackUUID = getItemUUID(stack)
             val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
             val locKey = indexToKey(i)
-            if (debugVerbose) log("pickupScan: slot $i ($locKey) shulker uuid=$stackUUID hash=${hash.take(8)} type=$type")
-
+            
             if (stackUUID != null) {
                 if (invMoods.containsKey(stackUUID)) {
                     val entry = invMoods[stackUUID]!!
                     if (entry.loc != locKey) {
                         invMoods[stackUUID] = entry.copy(loc = locKey, from = "pickup:reloc", type = type)
-                        log("pickupScan: reloc $stackUUID to $locKey")
                         changed = true
                     }
                     continue
@@ -416,7 +404,6 @@ object WTFClient : ClientModInitializer {
                 val transitEntry = transitMoods.remove(stackUUID)
                 if (transitEntry != null) {
                     invMoods[stackUUID] = transitEntry.copy(loc = locKey, from = "pickup:transit→inv", type = type)
-                    log("pickupScan: transit→inv $stackUUID at $locKey")
                     if (transitEntry.happy) notify("§7transit§f → §ainv§f §7(${transitEntry.name})§7")
                     changed = true
                     continue
@@ -426,7 +413,6 @@ object WTFClient : ClientModInitializer {
                 if (blockEntry != null && isBlockStale(blockEntry.loc, player.level())) {
                     blockMoods.remove(stackUUID)
                     invMoods[stackUUID] = blockEntry.copy(loc = locKey, from = "pickup:block→inv", type = type)
-                    log("pickupScan: block→inv $stackUUID at $locKey")
                     if (blockEntry.happy) notify("§eblock§f → §ainv§f §7(${blockEntry.name})§7")
                     changed = true
                     continue
@@ -439,27 +425,24 @@ object WTFClient : ClientModInitializer {
                 val entry = transitMoods.remove(hashMatch)!!
                 val finalUUID = stackUUID ?: ensureItemUUID(stack)
                 invMoods[finalUUID] = entry.copy(loc = locKey, uuid = finalUUID, from = "pickup:hash:transit→inv", type = type)
-                log("pickupScan: hash match transit→inv, uuid=$finalUUID at $locKey")
                 if (entry.happy) notify("§7transit§f → §ainv§f §7(${entry.name})§7")
                 changed = true
                 continue
             }
 
-            // Fallback 2: Robust Reconciliation if UUID and Hash failed
-            // If there's exactly one shulker of this type in transit, it's highly likely to be it
+            // Fallback 2: Robust Reconciliation
             val plausibleMatches = transitMoods.filterValues { it.type == type }
             if (plausibleMatches.size == 1) {
                 val matchKey = plausibleMatches.keys.first()
                 val entry = transitMoods.remove(matchKey)!!
                 val finalUUID = stackUUID ?: ensureItemUUID(stack)
                 invMoods[finalUUID] = entry.copy(loc = locKey, uuid = finalUUID, from = "pickup:recon:transit→inv", contentHash = hash, type = type)
-                log("pickupScan: recon match transit→inv, uuid=$finalUUID at $locKey (was $matchKey)")
                 if (entry.happy) notify("§7transit§f → §ainv§f §7(${entry.name})§7 §7(reconciled)§f")
                 changed = true
                 continue
             }
 
-            // Unknown shulker - assign ID and track in memory
+            // New shulker discovery
             val finalUUID = stackUUID ?: ensureItemUUID(stack)
             if (!invMoods.containsKey(finalUUID)) {
                 invMoods[finalUUID] = ShulkerState(
@@ -471,7 +454,6 @@ object WTFClient : ClientModInitializer {
                     from = "pickup:auto",
                     type = type
                 )
-                log("pickupScan: new shulker $finalUUID at $locKey")
                 changed = true
             }
         }
@@ -498,51 +480,6 @@ object WTFClient : ClientModInitializer {
             trimTransitCache()
             save()
         }
-    }
-
-    private fun quickSlotScan(player: Player, hotbarIdx: Int) {
-        val stack = player.inventoryMenu.getSlot(hotbarIdx).item
-        if (stack.isEmpty || !isShulkerItem(stack)) return
-        val hash = fingerprintFromItem(stack) ?: return
-        val stackUUID = ensureItemUUID(stack)
-        val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
-        val locKey = indexToKey(hotbarIdx)
-
-        if (invMoods.containsKey(stackUUID)) {
-            val entry = invMoods[stackUUID]!!
-            if (entry.loc != locKey) {
-                invMoods[stackUUID] = entry.copy(loc = locKey, from = "scroll-reloc", type = type)
-                save()
-            }
-            return
-        }
-
-        val transitEntry = transitMoods.remove(stackUUID)
-        if (transitEntry != null) {
-            invMoods[stackUUID] = transitEntry.copy(loc = locKey, from = "scroll:transit→inv", type = type)
-            if (transitEntry.happy) notify("§7transit§f → §ainv§f §7(${transitEntry.name})§7")
-            save()
-            return
-        }
-
-        val hashMatch = transitMoods.keys.firstOrNull { transitMoods[it]?.contentHash == hash }
-        if (hashMatch != null) {
-            val entry = transitMoods.remove(hashMatch)!!
-            invMoods[stackUUID] = entry.copy(loc = locKey, uuid = stackUUID, from = "scroll:hash:transit→inv", type = type)
-            if (entry.happy) notify("§7transit§f → §ainv§f §7(${entry.name})§7")
-            save()
-            return
-        }
-
-        invMoods[stackUUID] = ShulkerState(
-            loc = locKey,
-            name = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "???",
-            happy = false,
-            uuid = stackUUID,
-            contentHash = hash,
-            from = "scroll-detect",
-            type = type
-        )
     }
 
     @JvmStatic
