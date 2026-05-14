@@ -609,6 +609,7 @@ object WTFClient : ClientModInitializer {
 
     private fun isBlockStale(loc: String, level: Level): Boolean {
         val pos = parseBlockLoc(loc) ?: return true
+        if (!level.isLoaded(pos)) return false
         val state = level.getBlockState(pos)
         val blockId = BuiltInRegistries.BLOCK.getKey(state.block).toString()
         return !blockId.contains("shulker_box")
