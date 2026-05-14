@@ -1,40 +1,41 @@
-# gradle
-
+# Gradle
 .gradle/
 build/
 out/
 classes/
+.kotlin/
 
-# eclipse
-
-*.launch
-
-# idea
-
+# IDEs
 .idea/
 *.iml
 *.ipr
 *.iws
-
-# vscode
-
-.settings/
 .vscode/
-bin/
+.settings/
 .classpath
 .project
+bin/
 
-# macos
-
-*.DS_Store
-
-# fabric
-
+# Minecraft/Fabric Run
 run/
+!run/config/
+run/*
+!run/config/wtf/
 
-# java
+# macOS
+.DS_Store
 
+# Java
 hs_err_*.log
 replay_*.log
 *.hprof
 *.jfr
+
+# Local/Temp
+*.tmp
+*.log
+*.bak
+
+# Libraries/Sources that shouldn't be here (if they are external)
+# Based on the project structure, 'net/' seems to contain external code
+/net/
