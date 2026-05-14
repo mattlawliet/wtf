@@ -310,12 +310,13 @@ object WTFClient : ClientModInitializer {
             val hash = fingerprintFromItem(stack) ?: continue
             val stackUUID = ensureItemUUID(stack)
             val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+            val locKey = indexToKey(i)
             
             // Priority 1: Direct UUID match in inventory
             val existingInInv = invMoods[stackUUID]
             if (existingInInv != null) {
-                if (existingInInv.loc != i.toString()) {
-                    invMoods[stackUUID] = existingInInv.copy(loc = i.toString(), from = "scan:uuid-reloc", type = type)
+                if (existingInInv.loc != locKey) {
+                    invMoods[stackUUID] = existingInInv.copy(loc = locKey, from = "scan:uuid-reloc", type = type)
                     changed = true
                 }
                 continue
@@ -324,7 +325,7 @@ object WTFClient : ClientModInitializer {
             // Priority 2: UUID match in transit or block
             val transitEntry = transitMoods.remove(stackUUID)
             if (transitEntry != null) {
-                invMoods[stackUUID] = transitEntry.copy(loc = i.toString(), from = "scan:transit→inv", type = type)
+                invMoods[stackUUID] = transitEntry.copy(loc = locKey, from = "scan:transit→inv", type = type)
                 if (transitEntry.happy) notify("§7transit§f → §ainv§f §7(${transitEntry.name})§7")
                 changed = true
                 continue
@@ -333,7 +334,7 @@ object WTFClient : ClientModInitializer {
             val blockEntry = blockMoods[stackUUID]
             if (blockEntry != null && isBlockStale(blockEntry.loc, level)) {
                 blockMoods.remove(stackUUID)
-                invMoods[stackUUID] = blockEntry.copy(loc = i.toString(), from = "scan:block→inv", type = type)
+                invMoods[stackUUID] = blockEntry.copy(loc = locKey, from = "scan:block→inv", type = type)
                 if (blockEntry.happy) notify("§eblock§f → §ainv§f §7(${blockEntry.name})§7")
                 changed = true
                 continue
@@ -344,7 +345,7 @@ object WTFClient : ClientModInitializer {
             if (hashMatch != null) {
                 val entry = transitMoods.remove(hashMatch)!!
                 // If we match by hash, we merge the identity
-                invMoods[stackUUID] = entry.copy(loc = i.toString(), uuid = stackUUID, from = "scan:hash:transit→inv", type = type)
+                invMoods[stackUUID] = entry.copy(loc = locKey, uuid = stackUUID, from = "scan:hash:transit→inv", type = type)
                 if (entry.happy) notify("§7transit§f → §ainv§f §7(${entry.name})§7")
                 changed = true
                 continue
@@ -352,7 +353,7 @@ object WTFClient : ClientModInitializer {
 
             // New shulker discovery
             invMoods[stackUUID] = ShulkerState(
-                loc = i.toString(),
+                loc = locKey,
                 name = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "???",
                 happy = false,
                 uuid = stackUUID,
@@ -398,14 +399,15 @@ object WTFClient : ClientModInitializer {
             val hash = fingerprintFromItem(stack)!!
             val stackUUID = getItemUUID(stack)
             val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
-            if (debugVerbose) log("pickupScan: slot $i shulker uuid=$stackUUID hash=${hash.take(8)} type=$type")
+            val locKey = indexToKey(i)
+            if (debugVerbose) log("pickupScan: slot $i ($locKey) shulker uuid=$stackUUID hash=${hash.take(8)} type=$type")
 
             if (stackUUID != null) {
                 if (invMoods.containsKey(stackUUID)) {
                     val entry = invMoods[stackUUID]!!
-                    if (entry.loc != i.toString()) {
-                        invMoods[stackUUID] = entry.copy(loc = i.toString(), from = "pickup:reloc", type = type)
-                        log("pickupScan: reloc $stackUUID to $i")
+                    if (entry.loc != locKey) {
+                        invMoods[stackUUID] = entry.copy(loc = locKey, from = "pickup:reloc", type = type)
+                        log("pickupScan: reloc $stackUUID to $locKey")
                         changed = true
                     }
                     continue
@@ -413,8 +415,8 @@ object WTFClient : ClientModInitializer {
 
                 val transitEntry = transitMoods.remove(stackUUID)
                 if (transitEntry != null) {
-                    invMoods[stackUUID] = transitEntry.copy(loc = i.toString(), from = "pickup:transit→inv", type = type)
-                    log("pickupScan: transit→inv $stackUUID at $i")
+                    invMoods[stackUUID] = transitEntry.copy(loc = locKey, from = "pickup:transit→inv", type = type)
+                    log("pickupScan: transit→inv $stackUUID at $locKey")
                     if (transitEntry.happy) notify("§7transit§f → §ainv§f §7(${transitEntry.name})§7")
                     changed = true
                     continue
@@ -423,8 +425,8 @@ object WTFClient : ClientModInitializer {
                 val blockEntry = blockMoods[stackUUID]
                 if (blockEntry != null && isBlockStale(blockEntry.loc, player.level())) {
                     blockMoods.remove(stackUUID)
-                    invMoods[stackUUID] = blockEntry.copy(loc = i.toString(), from = "pickup:block→inv", type = type)
-                    log("pickupScan: block→inv $stackUUID at $i")
+                    invMoods[stackUUID] = blockEntry.copy(loc = locKey, from = "pickup:block→inv", type = type)
+                    log("pickupScan: block→inv $stackUUID at $locKey")
                     if (blockEntry.happy) notify("§eblock§f → §ainv§f §7(${blockEntry.name})§7")
                     changed = true
                     continue
@@ -436,8 +438,8 @@ object WTFClient : ClientModInitializer {
             if (hashMatch != null) {
                 val entry = transitMoods.remove(hashMatch)!!
                 val finalUUID = stackUUID ?: ensureItemUUID(stack)
-                invMoods[finalUUID] = entry.copy(loc = i.toString(), uuid = finalUUID, from = "pickup:hash:transit→inv", type = type)
-                log("pickupScan: hash match transit→inv, uuid=$finalUUID at $i")
+                invMoods[finalUUID] = entry.copy(loc = locKey, uuid = finalUUID, from = "pickup:hash:transit→inv", type = type)
+                log("pickupScan: hash match transit→inv, uuid=$finalUUID at $locKey")
                 if (entry.happy) notify("§7transit§f → §ainv§f §7(${entry.name})§7")
                 changed = true
                 continue
@@ -450,8 +452,8 @@ object WTFClient : ClientModInitializer {
                 val matchKey = plausibleMatches.keys.first()
                 val entry = transitMoods.remove(matchKey)!!
                 val finalUUID = stackUUID ?: ensureItemUUID(stack)
-                invMoods[finalUUID] = entry.copy(loc = i.toString(), uuid = finalUUID, from = "pickup:recon:transit→inv", contentHash = hash, type = type)
-                log("pickupScan: recon match transit→inv, uuid=$finalUUID at $i (was $matchKey)")
+                invMoods[finalUUID] = entry.copy(loc = locKey, uuid = finalUUID, from = "pickup:recon:transit→inv", contentHash = hash, type = type)
+                log("pickupScan: recon match transit→inv, uuid=$finalUUID at $locKey (was $matchKey)")
                 if (entry.happy) notify("§7transit§f → §ainv§f §7(${entry.name})§7 §7(reconciled)§f")
                 changed = true
                 continue
@@ -461,7 +463,7 @@ object WTFClient : ClientModInitializer {
             val finalUUID = stackUUID ?: ensureItemUUID(stack)
             if (!invMoods.containsKey(finalUUID)) {
                 invMoods[finalUUID] = ShulkerState(
-                    loc = i.toString(),
+                    loc = locKey,
                     name = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "???",
                     happy = false,
                     uuid = finalUUID,
@@ -469,16 +471,16 @@ object WTFClient : ClientModInitializer {
                     from = "pickup:auto",
                     type = type
                 )
-                log("pickupScan: new shulker $finalUUID at $i")
+                log("pickupScan: new shulker $finalUUID at $locKey")
                 changed = true
             }
         }
 
         // Detect items leaving inventory
         for ((k, entry) in invMoods.toList()) {
-            val slotIdx = entry.loc.toIntOrNull() ?: continue
-            if (slotIdx < 0 || slotIdx >= inv.slots.size) continue
-            val stack = inv.getSlot(slotIdx).item
+            val idx = keyToIndex(entry.loc) ?: continue
+            if (idx < 0 || idx >= inv.slots.size) continue
+            val stack = inv.getSlot(idx).item
             if (!stack.isEmpty && isShulkerItem(stack)) {
                 val currentUUID = getItemUUID(stack)
                 if (currentUUID == k) continue // Still there
@@ -504,11 +506,12 @@ object WTFClient : ClientModInitializer {
         val hash = fingerprintFromItem(stack) ?: return
         val stackUUID = ensureItemUUID(stack)
         val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+        val locKey = indexToKey(hotbarIdx)
 
         if (invMoods.containsKey(stackUUID)) {
             val entry = invMoods[stackUUID]!!
-            if (entry.loc != hotbarIdx.toString()) {
-                invMoods[stackUUID] = entry.copy(loc = hotbarIdx.toString(), from = "scroll-reloc", type = type)
+            if (entry.loc != locKey) {
+                invMoods[stackUUID] = entry.copy(loc = locKey, from = "scroll-reloc", type = type)
                 save()
             }
             return
@@ -516,7 +519,7 @@ object WTFClient : ClientModInitializer {
 
         val transitEntry = transitMoods.remove(stackUUID)
         if (transitEntry != null) {
-            invMoods[stackUUID] = transitEntry.copy(loc = hotbarIdx.toString(), from = "scroll:transit→inv", type = type)
+            invMoods[stackUUID] = transitEntry.copy(loc = locKey, from = "scroll:transit→inv", type = type)
             if (transitEntry.happy) notify("§7transit§f → §ainv§f §7(${transitEntry.name})§7")
             save()
             return
@@ -525,14 +528,14 @@ object WTFClient : ClientModInitializer {
         val hashMatch = transitMoods.keys.firstOrNull { transitMoods[it]?.contentHash == hash }
         if (hashMatch != null) {
             val entry = transitMoods.remove(hashMatch)!!
-            invMoods[stackUUID] = entry.copy(loc = hotbarIdx.toString(), uuid = stackUUID, from = "scroll:hash:transit→inv", type = type)
+            invMoods[stackUUID] = entry.copy(loc = locKey, uuid = stackUUID, from = "scroll:hash:transit→inv", type = type)
             if (entry.happy) notify("§7transit§f → §ainv§f §7(${entry.name})§7")
             save()
             return
         }
 
         invMoods[stackUUID] = ShulkerState(
-            loc = hotbarIdx.toString(),
+            loc = locKey,
             name = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "???",
             happy = false,
             uuid = stackUUID,
@@ -674,7 +677,7 @@ object WTFClient : ClientModInitializer {
     }
 
     private fun resolveInvEntry(player: Player, loc: String, storedName: String, uuid: String, serial: Int): ShulkerEntry? {
-        val slot = loc.toIntOrNull() ?: return null
+        val slot = keyToIndex(loc) ?: return null
         val stack = player.inventoryMenu.getSlot(slot).item
         if (stack.isEmpty || !isShulkerItem(stack)) return null
         return ShulkerEntry(Component.literal(storedName), stack, "inv", loc, uuid, serial)
@@ -799,7 +802,7 @@ object WTFClient : ClientModInitializer {
         try {
             val json = gson.fromJson(file.readText(), JsonObject::class.java) ?: return
             val version = json.getAsJsonPrimitive("version")?.asInt ?: return
-            if (version !in 5..10) return
+            if (version !in 5..11) return
             val save = gson.fromJson(json, ShulkerSave::class.java)
             blockMoods.clear()
             invMoods.clear()
@@ -868,7 +871,7 @@ object WTFClient : ClientModInitializer {
         if (happyBlock.isEmpty() && happyInv.isEmpty() && happyTransit.isEmpty() && !file.exists()) return
 
         file.writeText(gson.toJson(ShulkerSave(
-            version = 9,
+            version = 11,
             nextSerial = nextSerial,
             block = happyBlock,
             inv = happyInv,
@@ -877,15 +880,56 @@ object WTFClient : ClientModInitializer {
     }
 }
 
-internal fun slotLabel(loc: String): String {
-    val slot = loc.toIntOrNull() ?: return loc
-    return when (slot) {
-        in 0..8 -> "Hotbar ${slot + 1}"
-        in 9..35 -> {
-            val idx = slot - 9
-            "Inv row ${idx / 9 + 1}, col ${idx % 9 + 1}"
+internal fun indexToKey(index: Int): String {
+    return when (index) {
+        0 -> "craft:output"
+        in 1..4 -> "craft:input:${index}"
+        in 5..8 -> {
+            val name = when(index) {
+                5 -> "helmet"
+                6 -> "chestplate"
+                7 -> "leggings"
+                8 -> "boots"
+                else -> index.toString()
+            }
+            "armor:$name"
         }
-        36 -> "Offhand"
-        else -> "Slot $slot"
+        in 9..35 -> "inv:${index - 9 + 1}"
+        in 36..44 -> "hotbar:${index - 36 + 1}"
+        45 -> "offhand"
+        else -> "slot:$index"
     }
+}
+
+internal fun keyToLabel(key: String): String {
+    if (key.startsWith("hotbar:")) return "Hotbar ${key.substringAfter(":")}"
+    if (key.startsWith("inv:")) return "Inventory ${key.substringAfter(":")}"
+    if (key.startsWith("armor:")) return "Armor: ${key.substringAfter(":").replaceFirstChar { it.uppercase() }}"
+    if (key == "offhand") return "Offhand"
+    if (key == "craft:output") return "Crafting Output"
+    if (key.startsWith("craft:input:")) return "Crafting Input ${key.substringAfterLast(":")}"
+    return key
+}
+
+internal fun keyToIndex(key: String): Int? {
+    if (key == "craft:output") return 0
+    if (key.startsWith("craft:input:")) return key.substringAfterLast(":").toIntOrNull()
+    if (key.startsWith("armor:")) {
+        return when(key.substringAfter(":")) {
+            "helmet" -> 5
+            "chestplate" -> 6
+            "leggings" -> 7
+            "boots" -> 8
+            else -> null
+        }
+    }
+    if (key.startsWith("inv:")) return key.substringAfter(":").toIntOrNull()?.let { it + 9 - 1 }
+    if (key.startsWith("hotbar:")) return key.substringAfter(":").toIntOrNull()?.let { it + 36 - 1 }
+    if (key == "offhand") return 45
+    if (key.startsWith("slot:")) return key.substringAfter(":").toIntOrNull()
+    return key.toIntOrNull() // Backwards compatibility for old saves
+}
+
+internal fun slotLabel(loc: String): String {
+    return keyToLabel(loc)
 }

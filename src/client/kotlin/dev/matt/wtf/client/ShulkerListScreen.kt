@@ -43,7 +43,15 @@ class ShulkerListScreen(private val entries: List<ShulkerEntry>) : Screen(Compon
                     val coords = entry.location.substringAfterLast(':').replace("_", ", ")
                     "At $coords  [$dim]"
                 }
-                "transit" -> "§6In Transit / Missing§r"
+                "transit" -> {
+                    if (entry.location.contains(':') && entry.location.substringAfterLast(':').contains('_')) {
+                        val dim = entry.location.substringBeforeLast(':')
+                        val coords = entry.location.substringAfterLast(':').replace("_", ", ")
+                        "§6Dropped near $coords§r"
+                    } else {
+                        "§6In Transit (Missing)§r"
+                    }
+                }
                 else -> "Unknown"
             }
             graphics.drawString(font, Component.literal("#${entry.shortHash}:${entry.serial}  $detail"), width / 2 - 78, y + 14, 0xFF808080.toInt(), false)
