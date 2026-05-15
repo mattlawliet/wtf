@@ -49,7 +49,7 @@ object WTFClient : ClientModInitializer {
     private var nextSerial = 1
     private var prevInvFingerprint = 0
     private var scanTimer = 0
-    private var debugMode = false
+    private var debugMode = true
     private var debugVerbose = false
     private var logWriter: PrintWriter? = null
     private var logBytesWritten = 0
@@ -117,7 +117,7 @@ object WTFClient : ClientModInitializer {
                         if (debugMode) {
                             val id = getWorldId()
                             if (id != null) {
-                                val file = FabricLoader.getInstance().configDir.resolve("wtf/$id/debug.log").toFile()
+                                val file = getLogFile(id)
                                 file.parentFile.mkdirs()
                                 file.delete()
                                 logWriter = file.bufferedWriter().let { PrintWriter(it) }
@@ -137,7 +137,7 @@ object WTFClient : ClientModInitializer {
                                 debugVerbose = true
                                 val id = getWorldId()
                                 if (id != null) {
-                                    val file = FabricLoader.getInstance().configDir.resolve("wtf/$id/debug.log").toFile()
+                                    val file = getLogFile(id)
                                     file.parentFile.mkdirs()
                                     file.delete()
                                     logWriter = file.bufferedWriter().let { PrintWriter(it) }
@@ -205,12 +205,12 @@ object WTFClient : ClientModInitializer {
             val player = mc.player ?: return@register
             scanInventory(level, player)
             if (screen is ShulkerBoxScreen) {
-                handleShulkerScreen(mc, level, screen)
+                handleShulkerScreen(mc, level, player, screen)
             }
         }
     }
 
-    private fun handleShulkerScreen(mc: Minecraft, level: Level, screen: ShulkerBoxScreen) {
+    private fun handleShulkerScreen(mc: Minecraft, level: Level, player: Player, screen: ShulkerBoxScreen) {
         val a = screen as AbstractContainerScreenAccessor
         val container = (screen.menu as ShulkerBoxMenuAccessor).container
         val pos = getValidShulkerPos(mc, level) ?: return
@@ -219,6 +219,10 @@ object WTFClient : ClientModInitializer {
         val displayName = screen.title.string
         val contentHash = fingerprintContainer(container, shulkerType, be?.components()?.get(DataComponents.CUSTOM_NAME))
         val loc = blockLocation(pos, level)
+
+        // Get held shulker UUID to exclude from hash matching
+        val heldStack = player.inventoryMenu.getSlot(player.inventory.selectedSlot).item
+        val heldUUID = getItemUUID(heldStack)
 
         val beUUID = be?.let { getBlockEntityUUID(it) }
         var currentKey = when {
@@ -240,21 +244,31 @@ object WTFClient : ClientModInitializer {
 
         // Fallback to hash if UUID didn't find anything or is missing
         if (currentKey == null) {
-            val invKey = invMoods.keys.firstOrNull { k -> invMoods[k]?.contentHash == contentHash }
+            val invKey = invMoods.keys.firstOrNull { k ->
+                k != heldUUID && invMoods[k]?.contentHash == contentHash
+            }
             if (invKey != null) {
                 val entry = invMoods.remove(invKey)!!
                 blockMoods[invKey] = entry.copy(loc = loc, from = "hss:inv→block (hash)")
                 if (entry.happy && entry.loc != loc) notify("§ainv§f → §eblock§f §7(${entry.name})§7")
                 currentKey = invKey
+                log("handleShulkerScreen: hash-matched inv key=$invKey")
             } else {
-                val transitKey = transitMoods.keys.firstOrNull { k -> transitMoods[k]?.contentHash == contentHash }
+                val transitKey = transitMoods.keys.firstOrNull { k ->
+                    k != heldUUID && transitMoods[k]?.contentHash == contentHash
+                }
                 if (transitKey != null) {
                     val entry = transitMoods.remove(transitKey)!!
                     blockMoods[transitKey] = entry.copy(loc = loc, from = "hss:transit→block (hash)")
                     if (entry.happy && entry.loc != loc) notify("§7transit§f → §eblock§f §7(${entry.name})§7")
                     currentKey = transitKey
+                    log("handleShulkerScreen: hash-matched transit key=$transitKey")
+                } else {
+                    log("handleShulkerScreen: no match found, loc=$loc beUUID=$beUUID heldUUID=$heldUUID")
                 }
             }
+        } else {
+            log("handleShulkerScreen: uuid-matched key=$currentKey")
         }
 
         val currentEntry = currentKey?.let { blockMoods[it] }
@@ -262,6 +276,7 @@ object WTFClient : ClientModInitializer {
 
         if (currentKey != null) {
             val cachedNbt = serializeContainerToNbt(container)
+            log("handleShulkerScreen: currentKey=$currentKey cachedNbt=${cachedNbt?.size ?: "NULL"}")
             blockMoods[currentKey] = blockMoods[currentKey]!!.copy(name = displayName, contentHash = contentHash, type = shulkerType, cachedContents = cachedNbt)
         }
 
@@ -612,35 +627,43 @@ object WTFClient : ClientModInitializer {
         val player = mc.player ?: return emptyList()
         val entries = mutableListOf<ShulkerEntry>()
 
+        log("resolveHappyShulkers: blockMoods=${blockMoods.size}, invMoods=${invMoods.size}, transitMoods=${transitMoods.size}")
+
         for ((key, entry) in blockMoods) {
             if (!entry.happy) continue
+            log("resolveHappyShulkers: block key=$key cached=${entry.cachedContents?.size ?: "null"}")
             val shulkerEntry = resolveBlockEntry(level, entry.loc, entry.name, key, 0)
             if (shulkerEntry != null) entries.add(shulkerEntry)
         }
 
         for ((key, entry) in invMoods) {
             if (!entry.happy) continue
+            log("resolveHappyShulkers: inv key=$key cached=${entry.cachedContents?.size ?: "null"}")
             val shulkerEntry = resolveInvEntry(player, entry.loc, entry.name, key, 0)
             if (shulkerEntry != null) entries.add(shulkerEntry)
         }
 
         for ((key, entry) in transitMoods) {
             if (!entry.happy) continue
+            log("resolveHappyShulkers: transit key=$key cached=${entry.cachedContents?.size ?: "null"}")
             val item = BuiltInRegistries.ITEM.get(Identifier.parse(entry.type)).orElse(null)
             val stack = if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
             entries.add(ShulkerEntry(key, Component.literal(entry.name), stack, "transit", entry.loc, key, 0, cachedContentsNbt = entry.cachedContents))
         }
 
+        log("resolveHappyShulkers: returning ${entries.size} entries")
         return entries
     }
 
     private fun resolveBlockEntry(level: Level, loc: String, storedName: String, uuid: String, serial: Int): ShulkerEntry? {
         val stateEntry = blockMoods[uuid]
         val pos = parseBlockLoc(loc) ?: return null
+        val items = stateEntry?.cachedContents?.let { deserializeNbtToItems(it) } ?: emptyList()
         if (!level.isLoaded(pos)) {
             val item = stateEntry?.let { BuiltInRegistries.ITEM.get(Identifier.parse(it.type)).orElse(null) }
             val stack = if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
-            return ShulkerEntry(uuid, Component.literal(storedName), stack, "block", loc, uuid, serial, cachedContentsNbt = stateEntry?.cachedContents)
+            log("resolveBlockEntry: uuid=$uuid cachedContents=${stateEntry?.cachedContents?.size ?: "null"} items=${items.count { !it.isEmpty }}")
+            return ShulkerEntry(uuid, Component.literal(storedName), stack, "block", loc, uuid, serial, items = items, cachedContentsNbt = stateEntry?.cachedContents)
         }
         
         val state = level.getBlockState(pos)
@@ -651,7 +674,8 @@ object WTFClient : ClientModInitializer {
             val item = stateEntry?.let { BuiltInRegistries.ITEM.get(Identifier.parse(it.type)).orElse(null) }
             if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
         }
-        return ShulkerEntry(uuid, Component.literal(storedName), stack, "block", loc, uuid, serial, cachedContentsNbt = stateEntry?.cachedContents)
+        log("resolveBlockEntry: uuid=$uuid cachedContents=${stateEntry?.cachedContents?.size ?: "null"} items=${items.count { !it.isEmpty }}")
+        return ShulkerEntry(uuid, Component.literal(storedName), stack, "block", loc, uuid, serial, items = items, cachedContentsNbt = stateEntry?.cachedContents)
     }
 
     private fun resolveInvEntry(player: Player, loc: String, storedName: String, uuid: String, serial: Int): ShulkerEntry? {
@@ -659,7 +683,8 @@ object WTFClient : ClientModInitializer {
         val slot = keyToIndex(loc) ?: return null
         val stack = player.inventoryMenu.getSlot(slot).item
         if (stack.isEmpty || !isShulkerItem(stack)) return null
-        return ShulkerEntry(uuid, Component.literal(storedName), stack, "inv", loc, uuid, serial, cachedContentsNbt = stateEntry?.cachedContents)
+        val items = stateEntry?.cachedContents?.let { deserializeNbtToItems(it) } ?: emptyList()
+        return ShulkerEntry(uuid, Component.literal(storedName), stack, "inv", loc, uuid, serial, items = items, cachedContentsNbt = stateEntry?.cachedContents)
     }
 
     private fun getValidShulkerPos(mc: Minecraft, level: Level): BlockPos? {
@@ -752,8 +777,15 @@ object WTFClient : ClientModInitializer {
         return null
     }
 
-    private fun getConfigFile(worldId: String): File =
-        FabricLoader.getInstance().configDir.resolve("wtf/$worldId/moods.json").toFile()
+    private fun getConfigFile(worldId: String): File {
+        val baseDir = Minecraft.getInstance().gameDirectory
+        return File(baseDir, "config/wtf/$worldId/moods.json")
+    }
+
+    private fun getLogFile(worldId: String): File {
+        val baseDir = Minecraft.getInstance().gameDirectory
+        return File(baseDir, "config/wtf/$worldId/debug.log")
+    }
 
     private fun sanitize(s: String) = s.replace(Regex("[^a-zA-Z0-9_.-]"), "_")
 
@@ -763,7 +795,7 @@ object WTFClient : ClientModInitializer {
         prevInvFingerprint = 0
         scanTimer = 0
         if (debugMode) {
-            val logFile = FabricLoader.getInstance().configDir.resolve("wtf/$id/debug.log").toFile()
+            val logFile = getLogFile(id)
             logFile.parentFile.mkdirs()
             logFile.delete()
             logWriter = logFile.bufferedWriter().let { PrintWriter(it) }
@@ -838,6 +870,8 @@ object WTFClient : ClientModInitializer {
     }
 
     private fun serializeContainerToNbt(container: Container): ByteArray? {
+        val nonEmptyCount = (0 until minOf(container.containerSize, 27)).count { !container.getItem(it).isEmpty }
+        log("serializeContainerToNbt: containerSize=${container.containerSize}, nonEmptySlots=$nonEmptyCount")
         return try {
             val items = mutableListOf<Map<String, Any?>>()
             for (i in 0 until minOf(container.containerSize, 27)) {
@@ -851,7 +885,9 @@ object WTFClient : ClientModInitializer {
                     items.add(emptyMap())
                 }
             }
-            gson.toJson(items).toByteArray(Charsets.UTF_8)
+            val result = gson.toJson(items).toByteArray(Charsets.UTF_8)
+            log("serializeContainerToNbt: success, ${result.size} bytes")
+            result
         } catch (e: Exception) {
             log("serializeContainerToNbt failed: $e")
             null
@@ -859,7 +895,10 @@ object WTFClient : ClientModInitializer {
     }
 
     fun deserializeNbtToItems(data: ByteArray?): List<ItemStack> {
-        if (data == null) return List(27) { ItemStack.EMPTY }
+        if (data == null) {
+            log("deserializeNbtToItems: data is null")
+            return List(27) { ItemStack.EMPTY }
+        }
         return try {
             val json = String(data, Charsets.UTF_8)
             val items: List<Map<String, Any>> = gson.fromJson(json, ArrayList::class.java) as List<Map<String, Any>>

@@ -95,7 +95,8 @@ class ShulkerSection(
 
     fun getEntryAtPosition(localY: Int, scale: Float = 1f): ShulkerListRow? {
         if (isCollapsed) return null
-        val rowIndex = (localY + scrollOffset) / BASE_ROW_HEIGHT
+        val scaledRowHeight = (BASE_ROW_HEIGHT * scale).toInt()
+        val rowIndex = (localY + scrollOffset) / scaledRowHeight
         return if (rowIndex in entries.indices) entries[rowIndex] else null
     }
 }

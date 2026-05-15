@@ -66,7 +66,7 @@ class ShulkerListRow(
                 Component.literal(percentText),
                 x + width - percentWidth - (4 * scale).toInt(),
                 y + (rowHeight - 8) / 2,
-                0xFF808080.toInt(),
+                0xFF55FF55.toInt(),
                 false
             )
         }

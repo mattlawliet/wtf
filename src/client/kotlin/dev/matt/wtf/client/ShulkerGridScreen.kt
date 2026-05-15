@@ -138,32 +138,32 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         }
 
         hoveredId = null
-        var sectionTop = panelY + sectionHeaderHeight
+        var hoverY = panelY
+
         for (type in ShulkerSectionType.entries) {
             val section = sections[type] ?: continue
-            
-            val headerY = sectionTop - sectionHeaderHeight
-            
-            if (mouseX in 0..leftPanelWidth && mouseY >= headerY && mouseY < sectionTop) {
+
+            // Check if hovering over header
+            if (mouseX in 0..leftPanelWidth && mouseY >= hoverY && mouseY < hoverY + sectionHeaderHeight) {
                 break
             }
+            hoverY += sectionHeaderHeight
 
+            // Check if hovering over entries
             if (!section.isCollapsed) {
-                val sectionEnd = sectionTop + section.getTotalContentHeight(guiScale)
-                if (mouseY >= sectionTop && mouseY < sectionEnd && mouseX < leftPanelWidth) {
-                    val localY = mouseY - sectionTop
+                val contentHeight = section.getTotalContentHeight(guiScale)
+                if (mouseX in 0..leftPanelWidth && mouseY >= hoverY && mouseY < hoverY + contentHeight) {
+                    val localY = mouseY - hoverY
                     val entry = section.getEntryAtPosition(localY, guiScale)
                     if (entry != null) {
                         hoveredId = entry.id
                     }
                     break
                 }
-                sectionTop = sectionEnd
-            } else {
-                sectionTop += sectionHeaderHeight
+                hoverY += contentHeight
             }
-            
-            if (sectionTop >= height) break
+
+            if (hoverY >= panelY + panelHeight) break
         }
     }
 
@@ -231,6 +231,14 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             else -> ""
         }
         graphics.drawString(font, Component.literal(detailText), previewX, nameY + (12 * guiScale).toInt(), 0xFF808080.toInt(), false)
+
+        val itemCount = items.count { !it.isEmpty }
+        val debugStatus = when {
+            selected.cachedContentsNbt == null -> "items=$itemCount cached=NULL"
+            selected.cachedContentsNbt.isEmpty() -> "items=$itemCount cached=EMPTY"
+            else -> "items=$itemCount cached=${selected.cachedContentsNbt.size}B"
+        }
+        graphics.drawString(font, Component.literal(debugStatus), previewX, nameY + (24 * guiScale).toInt(), 0xFFFFFF00.toInt(), false)
     }
 
     override fun mouseClicked(mouseButtonEvent: MouseButtonEvent, bl: Boolean): Boolean {
@@ -239,7 +247,8 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         val button = mouseButtonEvent.button()
         
         if (button == 0 && mouseX < leftPanelWidth) {
-            var currentY = 0
+            val panelY = searchHeight + (5 * guiScale).toInt()
+            var currentY = panelY
 
             for (type in ShulkerSectionType.entries) {
                 val section = sections[type] ?: continue
@@ -251,8 +260,8 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
                 currentY += sectionHeaderHeight
 
                 if (!section.isCollapsed) {
-                    val sectionEnd = currentY + section.getTotalContentHeight(guiScale)
-                    if (mouseY >= currentY && mouseY < sectionEnd) {
+                    val contentHeight = section.getTotalContentHeight(guiScale)
+                    if (mouseY >= currentY && mouseY < currentY + contentHeight) {
                         val localY = (mouseY - currentY).toInt()
                         val entry = section.getEntryAtPosition(localY, guiScale)
                         if (entry != null) {
@@ -260,7 +269,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
                             return true
                         }
                     }
-                    currentY = sectionEnd
+                    currentY += contentHeight
                 }
 
                 if (currentY >= height) break
