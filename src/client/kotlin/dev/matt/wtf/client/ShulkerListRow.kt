@@ -12,20 +12,25 @@ class ShulkerListRow(
     val section: ShulkerSectionType,
     val matchPercent: Float = 0f
 ) {
-    private val rowHeight = 24
-
     companion object {
-        const val ICON_SIZE = 16
-        const val ICON_PADDING = 4
-        const val TEXT_LEFT_PAD = ICON_SIZE + ICON_PADDING * 2
+        const val BASE_ICON_SIZE = 16
+        const val BASE_ICON_PADDING = 4
+        const val BASE_ROW_HEIGHT = 24
     }
 
-    fun getRowHeight() = rowHeight
+    fun getRowHeight(scale: Float) = (BASE_ROW_HEIGHT * scale).toInt()
+    fun getIconSize(scale: Float) = (BASE_ICON_SIZE * scale).toInt()
+    fun getIconPadding(scale: Float) = (BASE_ICON_PADDING * scale).toInt()
 
-    fun render(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int, isHovered: Boolean, isSelected: Boolean) {
+    fun render(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int, isHovered: Boolean, isSelected: Boolean, scale: Float = 1f) {
+        val rowHeight = getRowHeight(scale)
+        val iconSize = getIconSize(scale)
+        val iconPadding = getIconPadding(scale)
+        val textLeftPad = iconSize + iconPadding * 2
+
         val bgColor = when {
-            isSelected -> 0x4A4A4A4A.toInt()
-            isHovered -> 0x2A2A2A2A.toInt()
+            isSelected -> 0xFF4A4A4A.toInt()
+            isHovered -> 0xFF3A3A3A.toInt()
             else -> 0
         }
 
@@ -34,12 +39,12 @@ class ShulkerListRow(
         }
 
         val textColor = when (section) {
-            ShulkerSectionType.BLOCK -> 0xFFAA00.toInt()
-            ShulkerSectionType.INVENTORY -> 0x55FF55.toInt()
-            ShulkerSectionType.TRANSIT -> 0xFFAA55.toInt()
+            ShulkerSectionType.BLOCK -> 0xFFFFAA00.toInt()
+            ShulkerSectionType.INVENTORY -> 0xFF55FF55.toInt()
+            ShulkerSectionType.TRANSIT -> 0xFFFFAA55.toInt()
         }
 
-        graphics.renderItem(stack, x + ICON_PADDING, y + (rowHeight - ICON_SIZE) / 2)
+        graphics.renderItem(stack, x + iconPadding, y + (rowHeight - iconSize) / 2)
 
         val displayName = name.string
         val truncatedName = if (displayName.length > 30) displayName.take(27) + "..." else displayName
@@ -47,7 +52,7 @@ class ShulkerListRow(
         graphics.drawString(
             font,
             Component.literal(truncatedName),
-            x + TEXT_LEFT_PAD,
+            x + textLeftPad,
             y + (rowHeight - 8) / 2,
             textColor,
             false
@@ -59,9 +64,9 @@ class ShulkerListRow(
             graphics.drawString(
                 font,
                 Component.literal(percentText),
-                x + width - percentWidth - 4,
+                x + width - percentWidth - (4 * scale).toInt(),
                 y + (rowHeight - 8) / 2,
-                0x808080.toInt(),
+                0xFF808080.toInt(),
                 false
             )
         }

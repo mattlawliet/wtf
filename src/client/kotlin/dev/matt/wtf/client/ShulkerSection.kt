@@ -8,19 +8,19 @@ class ShulkerSection(
     val type: ShulkerSectionType,
     val entries: List<ShulkerListRow>
 ) {
-    private val headerHeight = 20
-    var scrollOffset = 0
-
     companion object {
-        val ROW_HEIGHT = 24
+        const val BASE_HEADER_HEIGHT = 20
+        const val BASE_ROW_HEIGHT = 24
     }
 
-    fun getHeaderHeight() = headerHeight
+    var scrollOffset = 0
 
-    fun getTotalContentHeight() = entries.size * ROW_HEIGHT
+    fun getHeaderHeight(scale: Float) = (BASE_HEADER_HEIGHT * scale).toInt()
+    fun getRowHeight(scale: Float) = (BASE_ROW_HEIGHT * scale).toInt()
+    fun getTotalContentHeight(scale: Float) = entries.size * getRowHeight(scale)
 
     fun scroll(delta: Int) {
-        val maxScroll = maxOf(0, entries.size * ROW_HEIGHT - 200)
+        val maxScroll = maxOf(0, entries.size * BASE_ROW_HEIGHT - 200)
         scrollOffset = (scrollOffset + delta).coerceIn(0, maxScroll)
     }
 
@@ -28,14 +28,17 @@ class ShulkerSection(
         scrollOffset = 0
     }
 
-    fun renderHeader(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int) {
+    fun renderHeader(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int, scale: Float = 1f) {
+        val headerHeight = getHeaderHeight(scale)
+        val textPadding = (4 * scale).toInt()
+
         val headerColor = when (type) {
-            ShulkerSectionType.BLOCK -> 0xFFAA00.toInt()
-            ShulkerSectionType.INVENTORY -> 0x55FF55.toInt()
-            ShulkerSectionType.TRANSIT -> 0xFFAA55.toInt()
+            ShulkerSectionType.BLOCK -> 0xFFFFAA00.toInt()
+            ShulkerSectionType.INVENTORY -> 0xFF55FF55.toInt()
+            ShulkerSectionType.TRANSIT -> 0xFFFFAA55.toInt()
         }
 
-        graphics.fill(x, y, x + width, y + headerHeight, 0x2A2A2A2A.toInt())
+        graphics.fill(x, y, x + width, y + headerHeight, 0xFF2A2A2A.toInt())
 
         val headerText = when (type) {
             ShulkerSectionType.BLOCK -> "BLOCKS"
@@ -46,7 +49,7 @@ class ShulkerSection(
         graphics.drawString(
             font,
             Component.literal(headerText),
-            x + 4,
+            x + textPadding,
             y + (headerHeight - 8) / 2,
             headerColor,
             false
@@ -57,29 +60,30 @@ class ShulkerSection(
         graphics.drawString(
             font,
             Component.literal(countText),
-            x + width - countWidth - 4,
+            x + width - countWidth - textPadding,
             y + (headerHeight - 8) / 2,
-            0x808080.toInt(),
+            0xFF808080.toInt(),
             false
         )
     }
 
-    fun renderEntries(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int, visibleHeight: Int, hoveredId: String?, selectedId: String?) {
-        val startRow = (scrollOffset / ROW_HEIGHT).coerceAtLeast(0)
-        val endRow = minOf(entries.size, startRow + (visibleHeight / ROW_HEIGHT) + 1)
+    fun renderEntries(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int, visibleHeight: Int, hoveredId: String?, selectedId: String?, scale: Float = 1f) {
+        val rowHeight = getRowHeight(scale)
+        val startRow = (scrollOffset / rowHeight).coerceAtLeast(0)
+        val endRow = minOf(entries.size, startRow + (visibleHeight / rowHeight) + 1)
 
         for (i in startRow until endRow) {
             val entry = entries[i]
-            val entryY = y + i * ROW_HEIGHT - scrollOffset
+            val entryY = y + i * rowHeight - scrollOffset
 
-            if (entryY + ROW_HEIGHT < y || entryY > y + visibleHeight) continue
+            if (entryY + rowHeight < y || entryY > y + visibleHeight) continue
 
-            entry.render(graphics, font, x, entryY, width, isHovered = entry.id == hoveredId, isSelected = entry.id == selectedId)
+            entry.render(graphics, font, x, entryY, width, isHovered = entry.id == hoveredId, isSelected = entry.id == selectedId, scale)
         }
     }
 
     fun getEntryAtPosition(localY: Int): ShulkerListRow? {
-        val rowIndex = (localY + scrollOffset) / ROW_HEIGHT
+        val rowIndex = (localY + scrollOffset) / BASE_ROW_HEIGHT
         return if (rowIndex in entries.indices) entries[rowIndex] else null
     }
 }
