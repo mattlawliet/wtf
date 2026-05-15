@@ -34,6 +34,7 @@ import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.entity.BaseContainerBlockEntity
 import net.minecraft.core.component.DataComponentPatch
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.nbt.ListTag
 import net.minecraft.world.phys.AABB
 import java.io.File
 import java.io.PrintWriter
@@ -66,11 +67,12 @@ object WTFClient : ClientModInitializer {
         val uuid: String = "",
         val contentHash: String = "",
         val from: String = "",
-        val type: String = "minecraft:shulker_box"
+        val type: String = "minecraft:shulker_box",
+        val cachedContents: ByteArray? = null
     )
 
     data class ShulkerSave(
-        val version: Int = 10,
+        val version: Int = 12,
         val nextSerial: Int = 1,
         val block: Map<String, ShulkerState> = emptyMap(),
         val inv: Map<String, ShulkerState> = emptyMap(),
@@ -90,7 +92,7 @@ object WTFClient : ClientModInitializer {
             while (keyBinding.consumeClick()) {
                 val entries = resolveHappyShulkers()
                 if (entries.isNotEmpty()) {
-                    client.setScreen(ShulkerListScreen(entries))
+                    client.setScreen(ShulkerGridScreen(entries))
                 }
             }
             val player = client.player ?: return@register
@@ -101,7 +103,7 @@ object WTFClient : ClientModInitializer {
             dispatcher.register(ClientCommandManager.literal("wtf")
                 .executes {
                     val entries = resolveHappyShulkers()
-                    Minecraft.getInstance().setScreen(ShulkerListScreen(entries))
+                    Minecraft.getInstance().setScreen(ShulkerGridScreen(entries))
                     1
                 }
                 .then(ClientCommandManager.literal("debug")
@@ -259,7 +261,8 @@ object WTFClient : ClientModInitializer {
         val isHappy = currentEntry?.happy ?: false
 
         if (currentKey != null) {
-            blockMoods[currentKey] = blockMoods[currentKey]!!.copy(name = displayName, contentHash = contentHash, type = shulkerType)
+            val cachedNbt = serializeContainerToNbt(container)
+            blockMoods[currentKey] = blockMoods[currentKey]!!.copy(name = displayName, contentHash = contentHash, type = shulkerType, cachedContents = cachedNbt)
         }
 
         val button = Button.builder(Component.literal(if (isHappy) "\u263A" else "\u2639")) { btn ->
@@ -625,19 +628,19 @@ object WTFClient : ClientModInitializer {
             if (!entry.happy) continue
             val item = BuiltInRegistries.ITEM.get(Identifier.parse(entry.type)).orElse(null)
             val stack = if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
-            entries.add(ShulkerEntry(Component.literal(entry.name), stack, "transit", entry.loc, key, 0))
+            entries.add(ShulkerEntry(key, Component.literal(entry.name), stack, "transit", entry.loc, key, 0, cachedContentsNbt = entry.cachedContents))
         }
 
         return entries
     }
 
     private fun resolveBlockEntry(level: Level, loc: String, storedName: String, uuid: String, serial: Int): ShulkerEntry? {
+        val stateEntry = blockMoods[uuid]
         val pos = parseBlockLoc(loc) ?: return null
         if (!level.isLoaded(pos)) {
-            val entry = blockMoods[uuid]
-            val item = entry?.let { BuiltInRegistries.ITEM.get(Identifier.parse(it.type)).orElse(null) }
+            val item = stateEntry?.let { BuiltInRegistries.ITEM.get(Identifier.parse(it.type)).orElse(null) }
             val stack = if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
-            return ShulkerEntry(Component.literal(storedName), stack, "block", loc, uuid, serial)
+            return ShulkerEntry(uuid, Component.literal(storedName), stack, "block", loc, uuid, serial, cachedContentsNbt = stateEntry?.cachedContents)
         }
         
         val state = level.getBlockState(pos)
@@ -645,18 +648,18 @@ object WTFClient : ClientModInitializer {
         val stack = if (blockId.contains("shulker_box"))
             ItemStack(state.block)
         else {
-            val entry = blockMoods[uuid]
-            val item = entry?.let { BuiltInRegistries.ITEM.get(Identifier.parse(it.type)).orElse(null) }
+            val item = stateEntry?.let { BuiltInRegistries.ITEM.get(Identifier.parse(it.type)).orElse(null) }
             if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
         }
-        return ShulkerEntry(Component.literal(storedName), stack, "block", loc, uuid, serial)
+        return ShulkerEntry(uuid, Component.literal(storedName), stack, "block", loc, uuid, serial, cachedContentsNbt = stateEntry?.cachedContents)
     }
 
     private fun resolveInvEntry(player: Player, loc: String, storedName: String, uuid: String, serial: Int): ShulkerEntry? {
+        val stateEntry = invMoods[uuid]
         val slot = keyToIndex(loc) ?: return null
         val stack = player.inventoryMenu.getSlot(slot).item
         if (stack.isEmpty || !isShulkerItem(stack)) return null
-        return ShulkerEntry(Component.literal(storedName), stack, "inv", loc, uuid, serial)
+        return ShulkerEntry(uuid, Component.literal(storedName), stack, "inv", loc, uuid, serial, cachedContentsNbt = stateEntry?.cachedContents)
     }
 
     private fun getValidShulkerPos(mc: Minecraft, level: Level): BlockPos? {
@@ -778,7 +781,7 @@ object WTFClient : ClientModInitializer {
         try {
             val json = gson.fromJson(file.readText(), JsonObject::class.java) ?: return
             val version = json.getAsJsonPrimitive("version")?.asInt ?: return
-            if (version !in 5..11) return
+            if (version !in 5..12) return
             val save = gson.fromJson(json, ShulkerSave::class.java)
             blockMoods.clear()
             invMoods.clear()
@@ -834,6 +837,51 @@ object WTFClient : ClientModInitializer {
         log(msg)
     }
 
+    private fun serializeContainerToNbt(container: Container): ByteArray? {
+        return try {
+            val items = mutableListOf<Map<String, Any?>>()
+            for (i in 0 until minOf(container.containerSize, 27)) {
+                val stack = container.getItem(i)
+                if (!stack.isEmpty) {
+                    val itemMap = mutableMapOf<String, Any?>()
+                    itemMap["id"] = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+                    itemMap["count"] = stack.count
+                    items.add(itemMap)
+                } else {
+                    items.add(emptyMap())
+                }
+            }
+            gson.toJson(items).toByteArray(Charsets.UTF_8)
+        } catch (e: Exception) {
+            log("serializeContainerToNbt failed: $e")
+            null
+        }
+    }
+
+    fun deserializeNbtToItems(data: ByteArray?): List<ItemStack> {
+        if (data == null) return List(27) { ItemStack.EMPTY }
+        return try {
+            val json = String(data, Charsets.UTF_8)
+            val items: List<Map<String, Any>> = gson.fromJson(json, ArrayList::class.java) as List<Map<String, Any>>
+            val result = MutableList(27) { ItemStack.EMPTY }
+            for (i in items.indices) {
+                val itemMap = items[i]
+                val id = itemMap["id"] as? String
+                val count = (itemMap["count"] as? Number)?.toInt() ?: 1
+                if (id != null) {
+                    val item = BuiltInRegistries.ITEM.get(Identifier.parse(id)).orElse(null)
+                    if (item != null) {
+                        result[i] = ItemStack(item, count)
+                    }
+                }
+            }
+            result
+        } catch (e: Exception) {
+            log("deserializeNbtToItems failed: $e")
+            List(27) { ItemStack.EMPTY }
+        }
+    }
+
     private fun save() {
         val id = currentWorldId ?: return
         val file = getConfigFile(id)
@@ -847,7 +895,7 @@ object WTFClient : ClientModInitializer {
         if (happyBlock.isEmpty() && happyInv.isEmpty() && happyTransit.isEmpty() && !file.exists()) return
 
         file.writeText(gson.toJson(ShulkerSave(
-            version = 11,
+            version = 12,
             nextSerial = nextSerial,
             block = happyBlock,
             inv = happyInv,

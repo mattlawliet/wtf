@@ -4,12 +4,16 @@ import net.minecraft.network.chat.Component
 import net.minecraft.world.item.ItemStack
 
 data class ShulkerEntry(
+    val id: String,
     val name: Component,
     val stack: ItemStack,
     val section: String,
     val location: String,
     val shortHash: String,
-    val serial: Int
+    val serial: Int,
+    val items: List<ItemStack> = emptyList(),
+    val cachedContentsNbt: ByteArray? = null,
+    val matchPercent: Float = 0f
 )
 
 fun fuzzyMatch(query: String, text: String): Boolean {
