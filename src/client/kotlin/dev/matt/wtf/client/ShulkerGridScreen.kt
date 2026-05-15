@@ -113,9 +113,12 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
     }
 
     private fun renderLeftPanel(graphics: GuiGraphics, mouseX: Int, mouseY: Int) {
-        graphics.fill(0, 0, leftPanelWidth, height, 0xFF1A1A1A.toInt())
+        val panelY = searchHeight + (5 * guiScale).toInt()
+        val panelHeight = height - panelY - (5 * guiScale).toInt()
+        
+        graphics.fill(0, panelY, leftPanelWidth, panelY + panelHeight, 0xFF1A1A1A.toInt())
 
-        var currentY = 0
+        var currentY = panelY
 
         for (type in ShulkerSectionType.entries) {
             val section = sections[type] ?: continue
@@ -124,18 +127,18 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             currentY += sectionHeaderHeight
 
             if (!section.isCollapsed) {
-                val availableHeight = height - currentY
+                val availableHeight = height - currentY - (5 * guiScale).toInt()
                 if (availableHeight > 0) {
                     section.renderEntries(graphics, font, 0, currentY, leftPanelWidth, availableHeight, hoveredId, selectedId, guiScale)
                     currentY += minOf(section.getTotalContentHeight(guiScale), availableHeight)
                 }
             }
 
-            if (currentY >= height) break
+            if (currentY >= panelY + panelHeight) break
         }
 
         hoveredId = null
-        var sectionTop = sectionHeaderHeight
+        var sectionTop = panelY + sectionHeaderHeight
         for (type in ShulkerSectionType.entries) {
             val section = sections[type] ?: continue
             
@@ -165,17 +168,19 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
     }
 
     private fun renderPreviewPanel(graphics: GuiGraphics) {
+        val panelY = searchHeight + (5 * guiScale).toInt()
+        val panelHeight = height - panelY - (5 * guiScale).toInt()
+        
         val previewX = leftPanelWidth + (7 * guiScale).toInt()
-        val previewY = (7 * guiScale).toInt()
         val previewWidth = width - previewX - (7 * guiScale).toInt()
 
-        graphics.fill(previewX - (3 * guiScale).toInt(), 0,
-            width - (3 * guiScale).toInt(), height, 0xFF2A2A2A.toInt())
+        graphics.fill(previewX - (3 * guiScale).toInt(), panelY,
+            width - (3 * guiScale).toInt(), panelY + panelHeight, 0xFF2A2A2A.toInt())
 
         val selected = allEntries.find { it.id == selectedId }
         if (selected == null) {
             val hint = Component.literal("Select a shulker")
-            graphics.drawString(font, hint, previewX, previewY + 50, 0xFF808080.toInt(), true)
+            graphics.drawString(font, hint, previewX, panelY + 30, 0xFF808080.toInt(), true)
             return
         }
 
@@ -186,7 +191,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         val cellSize = (22 * guiScale).toInt()
         val cellPadding = (2 * guiScale).toInt()
         val gridStartX = previewX + (previewWidth - 9 * (cellSize + cellPadding)) / 2
-        val gridStartY = previewY + (10 * guiScale).toInt()
+        val gridStartY = panelY + (10 * guiScale).toInt()
 
         for (i in 0 until 27) {
             val col = i % 9
