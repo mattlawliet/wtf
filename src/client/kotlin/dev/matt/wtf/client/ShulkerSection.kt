@@ -9,8 +9,8 @@ class ShulkerSection(
     val entries: List<ShulkerListRow>
 ) {
     companion object {
-        const val BASE_HEADER_HEIGHT = 20
-        const val BASE_ROW_HEIGHT = 24
+        const val BASE_HEADER_HEIGHT = 14
+        const val BASE_ROW_HEIGHT = 17
     }
 
     var scrollOffset = 0
@@ -20,7 +20,7 @@ class ShulkerSection(
     fun getTotalContentHeight(scale: Float) = entries.size * getRowHeight(scale)
 
     fun scroll(delta: Int) {
-        val maxScroll = maxOf(0, entries.size * BASE_ROW_HEIGHT - 200)
+        val maxScroll = maxOf(0, entries.size * BASE_ROW_HEIGHT - 140)
         scrollOffset = (scrollOffset + delta).coerceIn(0, maxScroll)
     }
 

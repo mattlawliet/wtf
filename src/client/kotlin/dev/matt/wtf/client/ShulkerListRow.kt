@@ -13,9 +13,9 @@ class ShulkerListRow(
     val matchPercent: Float = 0f
 ) {
     companion object {
-        const val BASE_ICON_SIZE = 16
-        const val BASE_ICON_PADDING = 4
-        const val BASE_ROW_HEIGHT = 24
+        const val BASE_ICON_SIZE = 11
+        const val BASE_ICON_PADDING = 3
+        const val BASE_ROW_HEIGHT = 17
     }
 
     fun getRowHeight(scale: Float) = (BASE_ROW_HEIGHT * scale).toInt()

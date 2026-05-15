@@ -13,10 +13,10 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
     private var selectedId: String? = null
     private var hoveredId: String? = null
 
-    private val basePanelWidth = 200
-    private val baseSearchHeight = 30
-    private val baseHeaderHeight = 20
-    private val baseRowHeight = 24
+    private val basePanelWidth = 140
+    private val baseSearchHeight = 21
+    private val baseHeaderHeight = 14
+    private val baseRowHeight = 17
 
     private val leftPanelWidth get() = (basePanelWidth * guiScale).toInt()
     private val searchHeight get() = (baseSearchHeight * guiScale).toInt()
@@ -141,17 +141,17 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
     }
 
     private fun renderPreviewPanel(graphics: GuiGraphics) {
-        val previewX = leftPanelWidth + (10 * guiScale).toInt()
-        val previewY = searchHeight + (10 * guiScale).toInt()
-        val previewWidth = width - previewX - (10 * guiScale).toInt()
+        val previewX = leftPanelWidth + (7 * guiScale).toInt()
+        val previewY = searchHeight + (7 * guiScale).toInt()
+        val previewWidth = width - previewX - (7 * guiScale).toInt()
 
-        graphics.fill(previewX - (5 * guiScale).toInt(), previewY - (5 * guiScale).toInt(),
-            width - (5 * guiScale).toInt(), height - (5 * guiScale).toInt(), 0xFF2A2A2A.toInt())
+        graphics.fill(previewX - (3 * guiScale).toInt(), previewY - (3 * guiScale).toInt(),
+            width - (3 * guiScale).toInt(), height - (3 * guiScale).toInt(), 0xFF2A2A2A.toInt())
 
         val selected = allEntries.find { it.id == selectedId }
         if (selected == null) {
             val hint = Component.literal("Hover a shulker to preview contents")
-            graphics.drawString(font, hint, previewX, previewY + (100 * guiScale).toInt(), 0xFF808080.toInt(), true)
+            graphics.drawString(font, hint, previewX, previewY + (70 * guiScale).toInt(), 0xFF808080.toInt(), true)
             return
         }
 
@@ -159,10 +159,10 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             WTFClient.deserializeNbtToItems(selected.cachedContentsNbt)
         }
 
-        val cellSize = (32 * guiScale).toInt()
-        val cellPadding = (3 * guiScale).toInt()
+        val cellSize = (22 * guiScale).toInt()
+        val cellPadding = (2 * guiScale).toInt()
         val gridStartX = previewX + (previewWidth - 9 * (cellSize + cellPadding)) / 2
-        val gridStartY = previewY + (20 * guiScale).toInt()
+        val gridStartY = previewY + (14 * guiScale).toInt()
 
         val query = searchField?.value ?: ""
         val highlightIndices = if (query.isNotEmpty()) {
@@ -200,7 +200,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         val matchPercent = selected.matchPercent
         if (matchPercent > 0f && query.isNotEmpty()) {
             val percentText = "${(matchPercent * 100).toInt()}% match"
-            graphics.drawString(font, Component.literal(percentText), previewX, nameY + (12 * guiScale).toInt(), 0xFF808080.toInt(), false)
+            graphics.drawString(font, Component.literal(percentText), previewX, nameY + (8 * guiScale).toInt(), 0xFF808080.toInt(), false)
         }
 
         val detailText = when (selected.section) {
@@ -216,7 +216,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             "transit" -> "In Transit"
             else -> ""
         }
-        graphics.drawString(font, Component.literal(detailText), previewX, nameY + (24 * guiScale).toInt(), 0xFF808080.toInt(), false)
+        graphics.drawString(font, Component.literal(detailText), previewX, nameY + (17 * guiScale).toInt(), 0xFF808080.toInt(), false)
     }
 
     private fun findMatchingItemIndices(query: String, items: List<ItemStack>): Set<Int> {
