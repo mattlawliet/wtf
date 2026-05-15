@@ -14,13 +14,20 @@ class ShulkerSection(
     }
 
     var scrollOffset = 0
+    var isCollapsed = false
+
+    fun toggleCollapse() {
+        isCollapsed = !isCollapsed
+        if (isCollapsed) scrollOffset = 0
+    }
 
     fun getHeaderHeight(scale: Float) = (BASE_HEADER_HEIGHT * scale).toInt()
     fun getRowHeight(scale: Float) = (BASE_ROW_HEIGHT * scale).toInt()
     fun getTotalContentHeight(scale: Float) = entries.size * getRowHeight(scale)
 
     fun scroll(delta: Int) {
-        val maxScroll = maxOf(0, entries.size * BASE_ROW_HEIGHT - 140)
+        if (isCollapsed) return
+        val maxScroll = maxOf(0, entries.size * BASE_ROW_HEIGHT - 100)
         scrollOffset = (scrollOffset + delta).coerceIn(0, maxScroll)
     }
 
@@ -30,7 +37,6 @@ class ShulkerSection(
 
     fun renderHeader(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int, scale: Float = 1f) {
         val headerHeight = getHeaderHeight(scale)
-        val textPadding = (4 * scale).toInt()
 
         val headerColor = when (type) {
             ShulkerSectionType.BLOCK -> 0xFFFFAA00.toInt()
@@ -39,6 +45,9 @@ class ShulkerSection(
         }
 
         graphics.fill(x, y, x + width, y + headerHeight, 0xFF2A2A2A.toInt())
+
+        val collapseArrow = if (isCollapsed) ">" else "v"
+        graphics.drawString(font, collapseArrow, x + 2, y + (headerHeight - 8) / 2, 0xFFFFFFFF.toInt(), false)
 
         val headerText = when (type) {
             ShulkerSectionType.BLOCK -> "BLOCKS"
@@ -49,7 +58,7 @@ class ShulkerSection(
         graphics.drawString(
             font,
             Component.literal(headerText),
-            x + textPadding,
+            x + 12,
             y + (headerHeight - 8) / 2,
             headerColor,
             false
@@ -60,7 +69,7 @@ class ShulkerSection(
         graphics.drawString(
             font,
             Component.literal(countText),
-            x + width - countWidth - textPadding,
+            x + width - countWidth - 4,
             y + (headerHeight - 8) / 2,
             0xFF808080.toInt(),
             false
@@ -68,9 +77,11 @@ class ShulkerSection(
     }
 
     fun renderEntries(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int, visibleHeight: Int, hoveredId: String?, selectedId: String?, scale: Float = 1f) {
+        if (isCollapsed) return
+        
         val rowHeight = getRowHeight(scale)
         val startRow = (scrollOffset / rowHeight).coerceAtLeast(0)
-        val endRow = minOf(entries.size, startRow + (visibleHeight / rowHeight) + 1)
+        val endRow = minOf(entries.size, startRow + (visibleHeight / rowHeight) + 2)
 
         for (i in startRow until endRow) {
             val entry = entries[i]
@@ -82,7 +93,8 @@ class ShulkerSection(
         }
     }
 
-    fun getEntryAtPosition(localY: Int): ShulkerListRow? {
+    fun getEntryAtPosition(localY: Int, scale: Float = 1f): ShulkerListRow? {
+        if (isCollapsed) return null
         val rowIndex = (localY + scrollOffset) / BASE_ROW_HEIGHT
         return if (rowIndex in entries.indices) entries[rowIndex] else null
     }
