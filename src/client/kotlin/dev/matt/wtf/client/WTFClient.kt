@@ -194,7 +194,7 @@ object WTFClient : ClientModInitializer {
             )
             transitOrder.addLast(key)
             save()
-            log("block break: $loc → transitMoods (${entry.name}, uuid=${key.take(8)}, type=$blockId)")
+            log("block break: $loc → transitMoods (${entry.name}, uuid=$key, type=$blockId)")
             if (entry.happy) notify("§eblock§f → §7transit§f §7(${entry.name}§7)")
         }
 
@@ -625,7 +625,7 @@ object WTFClient : ClientModInitializer {
             if (!entry.happy) continue
             val item = BuiltInRegistries.ITEM.get(Identifier.parse(entry.type)).orElse(null)
             val stack = if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
-            entries.add(ShulkerEntry(Component.literal(entry.name), stack, "transit", entry.loc, key.take(8), 0))
+            entries.add(ShulkerEntry(Component.literal(entry.name), stack, "transit", entry.loc, key, 0))
         }
 
         return entries
@@ -637,7 +637,7 @@ object WTFClient : ClientModInitializer {
             val entry = blockMoods[uuid]
             val item = entry?.let { BuiltInRegistries.ITEM.get(Identifier.parse(it.type)).orElse(null) }
             val stack = if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
-            return ShulkerEntry(Component.literal(storedName), stack, "block", loc, uuid.take(8), serial)
+            return ShulkerEntry(Component.literal(storedName), stack, "block", loc, uuid, serial)
         }
         
         val state = level.getBlockState(pos)
@@ -649,7 +649,7 @@ object WTFClient : ClientModInitializer {
             val item = entry?.let { BuiltInRegistries.ITEM.get(Identifier.parse(it.type)).orElse(null) }
             if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
         }
-        return ShulkerEntry(Component.literal(storedName), stack, "block", loc, uuid.take(8), serial)
+        return ShulkerEntry(Component.literal(storedName), stack, "block", loc, uuid, serial)
     }
 
     private fun resolveInvEntry(player: Player, loc: String, storedName: String, uuid: String, serial: Int): ShulkerEntry? {
@@ -693,7 +693,7 @@ object WTFClient : ClientModInitializer {
             }
         }
         val result = digest.digest().toHex()
-        if (debugVerbose) log("fingerprintItems: => ${result.take(8)}")
+        if (debugVerbose) log("fingerprintItems: => $result")
         return result
     }
 
