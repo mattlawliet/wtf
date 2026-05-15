@@ -47,18 +47,21 @@ object WTFClient : ClientModInitializer {
     private val transitMoods = HashMap<String, ShulkerState>()
     private var currentWorldId: String? = null
     private var nextSerial = 1
-    private var prevInvFingerprint = 0
-    private var scanTimer = 0
     private var debugMode = true
     private var debugVerbose = false
     private var logWriter: PrintWriter? = null
     private var logBytesWritten = 0
     private val MAX_LOG_BYTES = 1_000_000
     private val MAX_TRANSIT_SPARE = 20
-    private val taggedItems = HashMap<Int, String>()
-    private var prevSelectedSlot = -1
     private var tickCounter = 0
+
     private val transitOrder = ArrayDeque<String>()
+
+    private var prevHeldUUID: String? = null
+    private var prevSelectedSlot: Int = -1
+    private var scanQueued: Boolean = false
+    private var throttleTicks: Int = 0
+    private val THROTTLE_WINDOW = 5
 
     data class ShulkerState(
         val loc: String,
@@ -95,8 +98,30 @@ object WTFClient : ClientModInitializer {
                     client.setScreen(ShulkerGridScreen(entries))
                 }
             }
+
             val player = client.player ?: return@register
-            pickupScan(player)
+            tickCounter++
+
+            val currentSlot = player.inventory.selectedSlot
+            val currentStack = player.inventoryMenu.getSlot(currentSlot).item
+            val currentUUID = getItemUUID(currentStack)
+
+            if (currentSlot != prevSelectedSlot || currentUUID != prevHeldUUID) {
+                prevSelectedSlot = currentSlot
+                prevHeldUUID = currentUUID
+                scanQueued = true
+                throttleTicks = THROTTLE_WINDOW
+            }
+
+            if (scanQueued) {
+                if (throttleTicks > 0) {
+                    throttleTicks--
+                } else {
+                    val level = client.level ?: return@register
+                    scanInventory(level, player)
+                    scanQueued = false
+                }
+            }
         }
 
         ClientCommandRegistrationCallback.EVENT.register { dispatcher, _ ->
@@ -168,15 +193,15 @@ object WTFClient : ClientModInitializer {
             invMoods.clear()
             transitMoods.clear()
             nextSerial = 1
-            prevInvFingerprint = 0
-            scanTimer = 0
             prevSelectedSlot = -1
+            prevHeldUUID = null
+            scanQueued = false
+            throttleTicks = 0
             tickCounter = 0
             transitOrder.clear()
             logWriter?.close()
             logWriter = null
             logBytesWritten = 0
-            taggedItems.clear()
         }
 
         ClientPlayerBlockBreakEvents.AFTER.register { world, _, pos, state ->
@@ -321,15 +346,19 @@ object WTFClient : ClientModInitializer {
     private fun scanInventory(level: Level, player: Player) {
         val inv = player.inventoryMenu
         var changed = false
+
+        val heldStack = player.inventoryMenu.getSlot(player.inventory.selectedSlot).item
+        val heldUUID = getItemUUID(heldStack)
+
         for (i in 0 until inv.slots.size) {
             val stack = inv.getSlot(i).item
             if (stack.isEmpty || !isShulkerItem(stack)) continue
-            
+
             val hash = fingerprintFromItem(stack) ?: continue
             val stackUUID = ensureItemUUID(stack)
             val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
             val locKey = indexToKey(i)
-            
+
             // Priority 1: Direct UUID match in inventory
             val existingInInv = invMoods[stackUUID]
             if (existingInInv != null) {
@@ -358,11 +387,12 @@ object WTFClient : ClientModInitializer {
                 continue
             }
 
-            // Priority 3: Fallback to hash if UUID is new or mismatching
-            val hashMatch = transitMoods.keys.firstOrNull { transitMoods[it]?.contentHash == hash }
+            // Priority 3: Fallback to hash if UUID is new or mismatching (exclude held UUID)
+            val hashMatch = transitMoods.keys.firstOrNull { k ->
+                k != heldUUID && transitMoods[k]?.contentHash == hash
+            }
             if (hashMatch != null) {
                 val entry = transitMoods.remove(hashMatch)!!
-                // If we match by hash, we merge the identity
                 invMoods[stackUUID] = entry.copy(loc = locKey, uuid = stackUUID, from = "scan:hash:transit→inv", type = type)
                 if (entry.happy) notify("§7transit§f → §ainv§f §7(${entry.name})§7")
                 changed = true
@@ -379,7 +409,6 @@ object WTFClient : ClientModInitializer {
                 from = "scan:new",
                 type = type
             )
-            // No notify for new "sad" shulkers to avoid spam
         }
         if (changed) save()
     }
@@ -387,28 +416,20 @@ object WTFClient : ClientModInitializer {
     private fun pickupScan(player: Player) {
         val inv = player.inventoryMenu
         val currentSlot = player.inventory.selectedSlot
+        val heldStack = player.inventoryMenu.getSlot(currentSlot).item
+        val heldUUID = getItemUUID(heldStack)
 
-        if (currentSlot != prevSelectedSlot) {
-            prevSelectedSlot = currentSlot
-            // No return here - we want to scan the full inventory immediately when the selection changes
-        }
-
-        val currentFp = (0 until inv.slots.size).map { ItemStack.hashItemAndComponents(inv.getSlot(it).item) }.hashCode()
-        if (currentFp == prevInvFingerprint) return
-        prevInvFingerprint = currentFp
-        
         var changed = false
         if (debugVerbose) log("pickupScan: scan start, ${inv.slots.size} slots")
         for (i in 0 until inv.slots.size) {
             val stack = inv.getSlot(i).item
             if (stack.isEmpty || !isShulkerItem(stack)) continue
-            
-            // Fast-path: check if we already track this stack by its unique hash
+
             val hash = fingerprintFromItem(stack) ?: continue
             val stackUUID = getItemUUID(stack)
             val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
             val locKey = indexToKey(i)
-            
+
             if (stackUUID != null) {
                 if (invMoods.containsKey(stackUUID)) {
                     val entry = invMoods[stackUUID]!!
@@ -437,8 +458,10 @@ object WTFClient : ClientModInitializer {
                 }
             }
 
-            // Fallback 1: Match by hash if UUID is unknown or missing
-            val hashMatch = transitMoods.keys.firstOrNull { transitMoods[it]?.contentHash == hash }
+            // Fallback 1: Match by hash if UUID is unknown or missing (exclude held UUID)
+            val hashMatch = transitMoods.keys.firstOrNull { k ->
+                k != heldUUID && transitMoods[k]?.contentHash == hash
+            }
             if (hashMatch != null) {
                 val entry = transitMoods.remove(hashMatch)!!
                 val finalUUID = stackUUID ?: ensureItemUUID(stack)
@@ -448,14 +471,15 @@ object WTFClient : ClientModInitializer {
                 continue
             }
 
-            // Fallback 2: Robust Reconciliation
+            // Fallback 2: Robust Reconciliation (exclude held UUID)
             val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: ""
-            val plausibleMatches = transitMoods.filterValues { it.type == type && (it.name == stackName || stackName.isEmpty()) }
-            
+            val plausibleMatches = transitMoods.filter { (k, v) ->
+                k != heldUUID && v.type == type && (v.name == stackName || stackName.isEmpty())
+            }.toMap()
+
             val matchKey = if (plausibleMatches.isNotEmpty()) {
                 val happyMatches = plausibleMatches.filterValues { it.happy }
                 if (happyMatches.isNotEmpty()) {
-                    // Prioritize matching hash if multiple happy ones exist, or just pick the oldest in transit
                     happyMatches.keys.firstOrNull { happyMatches[it]?.contentHash == hash } ?: happyMatches.keys.first()
                 } else {
                     plausibleMatches.keys.first()
@@ -488,8 +512,10 @@ object WTFClient : ClientModInitializer {
             }
         }
 
-        // Detect items leaving inventory
+        // Detect items leaving inventory (exclude held UUID)
         for ((k, entry) in invMoods.toList()) {
+            if (k == heldUUID) continue // Don't move held shulker to transit
+
             val idx = keyToIndex(entry.loc) ?: continue
             if (idx < 0 || idx >= inv.slots.size) continue
             val stack = inv.getSlot(idx).item
@@ -497,7 +523,7 @@ object WTFClient : ClientModInitializer {
                 val currentUUID = getItemUUID(stack)
                 if (currentUUID == k) continue // Still there
             }
-            
+
             // Shulker is gone from this slot
             transitMoods[k] = entry.copy(from = "inv→transit")
             transitOrder.addLast(k)
@@ -792,8 +818,11 @@ object WTFClient : ClientModInitializer {
     private fun load() {
         val id = getWorldId() ?: return
         currentWorldId = id
-        prevInvFingerprint = 0
-        scanTimer = 0
+        prevSelectedSlot = -1
+        prevHeldUUID = null
+        scanQueued = false
+        throttleTicks = 0
+        tickCounter = 0
         if (debugMode) {
             val logFile = getLogFile(id)
             logFile.parentFile.mkdirs()
