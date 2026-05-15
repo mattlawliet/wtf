@@ -39,9 +39,57 @@ import net.minecraft.world.phys.AABB
 import java.io.File
 import java.io.PrintWriter
 import java.security.MessageDigest
+import java.util.Base64
+import com.google.gson.TypeAdapter
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonWriter
+import com.google.gson.stream.JsonToken
+import com.google.gson.JsonParseException
 
 object WTFClient : ClientModInitializer {
-    private val gson = GsonBuilder().setPrettyPrinting().create()
+    private val byteArrayAdapter = object : TypeAdapter<ByteArray?>() {
+        override fun write(out: JsonWriter, value: ByteArray?) {
+            if (value == null) {
+                out.nullValue()
+                return
+            }
+            out.value(Base64.getEncoder().encodeToString(value))
+        }
+
+        override fun read(`in`: JsonReader): ByteArray? {
+            return when (`in`.peek()) {
+                JsonToken.NULL -> { `in`.nextNull(); null }
+                JsonToken.STRING -> {
+                    val encoded = `in`.nextString()
+                    try {
+                        Base64.getDecoder().decode(encoded)
+                    } catch (e: Exception) {
+                        log("byteArrayAdapter: failed to decode base64: $e")
+                        null
+                    }
+                }
+                JsonToken.BEGIN_ARRAY -> {
+                    val bytes = mutableListOf<Byte>()
+                    `in`.beginArray()
+                    while (`in`.hasNext()) {
+                        try {
+                            val b = (`in`.nextInt().toByte())
+                            bytes.add(b)
+                        } catch (e: Exception) {
+                            throw JsonParseException("Invalid byte array format", e)
+                        }
+                    }
+                    `in`.endArray()
+                    bytes.toByteArray()
+                }
+                else -> throw JsonParseException("Expected ByteArray as string or array, got: ${`in`.peek()}")
+            }
+        }
+    }
+    private val gson = GsonBuilder()
+        .setPrettyPrinting()
+        .registerTypeAdapter(object : com.google.gson.reflect.TypeToken<ByteArray?>() {}.type, byteArrayAdapter)
+        .create()
     private val blockMoods = HashMap<String, ShulkerState>()
     private val invMoods = HashMap<String, ShulkerState>()
     private val transitMoods = HashMap<String, ShulkerState>()
@@ -840,9 +888,8 @@ object WTFClient : ClientModInitializer {
             return
         }
         try {
-            val json = gson.fromJson(file.readText(), JsonObject::class.java) ?: return
-            val version = json.getAsJsonPrimitive("version")?.asInt ?: return
-            if (version !in 5..12) return
+            val json = file.readText()
+            log("load: reading ${json.length} chars from ${file.name}")
             val save = gson.fromJson(json, ShulkerSave::class.java)
             blockMoods.clear()
             invMoods.clear()
@@ -851,7 +898,12 @@ object WTFClient : ClientModInitializer {
             invMoods.putAll(save.inv)
             transitMoods.putAll(save.transit)
             nextSerial = save.nextSerial
-        } catch (_: Exception) { }
+            val totalCached = (save.block.values + save.inv.values + save.transit.values)
+                .count { it.cachedContents != null }
+            log("load: loaded block=${save.block.size} inv=${save.inv.size} transit=${save.transit.size}, cachedContents=$totalCached")
+        } catch (e: Exception) { 
+            log("load failed: $e")
+        }
     }
 
     private fun getItemUUID(stack: ItemStack): String? {
@@ -930,6 +982,7 @@ object WTFClient : ClientModInitializer {
         }
         return try {
             val json = String(data, Charsets.UTF_8)
+            log("deserializeNbtToItems: parsing ${json.length} chars")
             val items: List<Map<String, Any>> = gson.fromJson(json, ArrayList::class.java) as List<Map<String, Any>>
             val result = MutableList(27) { ItemStack.EMPTY }
             for (i in items.indices) {
@@ -943,6 +996,8 @@ object WTFClient : ClientModInitializer {
                     }
                 }
             }
+            val nonEmpty = result.count { !it.isEmpty }
+            log("deserializeNbtToItems: got $nonEmpty non-empty items")
             result
         } catch (e: Exception) {
             log("deserializeNbtToItems failed: $e")
@@ -954,21 +1009,27 @@ object WTFClient : ClientModInitializer {
         val id = currentWorldId ?: return
         val file = getConfigFile(id)
         file.parentFile.mkdirs()
-        
-        // Persistence Filter: Only save "happy" shulkers to disk
+
         val happyBlock = blockMoods.filterValues { it.happy }
         val happyInv = invMoods.filterValues { it.happy }
         val happyTransit = transitMoods.filterValues { it.happy }
-        
+
+        val totalCached = (happyBlock.values + happyInv.values + happyTransit.values)
+            .count { it.cachedContents != null }
+        val totalBytes = (happyBlock.values + happyInv.values + happyTransit.values)
+            .mapNotNull { it.cachedContents?.size ?: 0 }.sum()
+
         if (happyBlock.isEmpty() && happyInv.isEmpty() && happyTransit.isEmpty() && !file.exists()) return
 
-        file.writeText(gson.toJson(ShulkerSave(
+        val json = gson.toJson(ShulkerSave(
             version = 12,
             nextSerial = nextSerial,
             block = happyBlock,
             inv = happyInv,
             transit = happyTransit
-        )))
+        ))
+        log("save: block=${happyBlock.size} inv=${happyInv.size} transit=${happyTransit.size}, cachedContents=$totalCached (${totalBytes}B), json=${json.length} chars")
+        file.writeText(json)
     }
 }
 
