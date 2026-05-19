@@ -41,7 +41,7 @@ class ShulkerSection(
         val headerColor = when (type) {
             ShulkerSectionType.BLOCK -> 0xFFFFAA00.toInt()
             ShulkerSectionType.INVENTORY -> 0xFF55FF55.toInt()
-            ShulkerSectionType.TRANSIT -> 0xFFFFAA55.toInt()
+            ShulkerSectionType.ITEM -> 0xFFFFAA55.toInt()
         }
 
         graphics.fill(x, y, x + width, y + headerHeight, 0xFF2A2A2A.toInt())
@@ -52,7 +52,7 @@ class ShulkerSection(
         val headerText = when (type) {
             ShulkerSectionType.BLOCK -> "BLOCKS"
             ShulkerSectionType.INVENTORY -> "INVENTORY"
-            ShulkerSectionType.TRANSIT -> "TRANSIT"
+            ShulkerSectionType.ITEM -> "ITEMS"
         }
 
         graphics.drawString(

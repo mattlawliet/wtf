@@ -6,7 +6,8 @@
 		"BlockItemMixin",
 		"ExampleClientMixin",
 		"AbstractContainerScreenAccessor",
-		"ShulkerBoxMenuAccessor"
+		"ShulkerBoxMenuAccessor",
+		"ClientLevelMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

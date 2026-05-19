@@ -57,24 +57,24 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
 
         val blockEntries = mutableListOf<ShulkerListRow>()
         val invEntries = mutableListOf<ShulkerListRow>()
-        val transitEntries = mutableListOf<ShulkerListRow>()
+        val itemEntries = mutableListOf<ShulkerListRow>()
 
         for (entry in allEntries) {
             val sectionType = when (entry.section) {
                 "block" -> ShulkerSectionType.BLOCK
                 "inv" -> ShulkerSectionType.INVENTORY
-                "transit" -> ShulkerSectionType.TRANSIT
+                "item" -> ShulkerSectionType.ITEM
                 else -> continue
             }
 
             val rows = when (sectionType) {
                 ShulkerSectionType.BLOCK -> blockEntries
                 ShulkerSectionType.INVENTORY -> invEntries
-                ShulkerSectionType.TRANSIT -> transitEntries
+                ShulkerSectionType.ITEM -> itemEntries
             }
 
             val items = entry.items.ifEmpty {
-                WTFClient.deserializeNbtToItems(entry.cachedContentsNbt)
+                entry.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems) ?: emptyList()
             }
             val matchPercent = if (query.isEmpty()) 1f else fuzzyMatchPercent(query, entry.name.string, items)
             if (matchPercent > 0f || query.isEmpty()) {
@@ -94,8 +94,8 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         if (invEntries.isNotEmpty()) {
             sections[ShulkerSectionType.INVENTORY] = ShulkerSection(ShulkerSectionType.INVENTORY, invEntries)
         }
-        if (transitEntries.isNotEmpty()) {
-            sections[ShulkerSectionType.TRANSIT] = ShulkerSection(ShulkerSectionType.TRANSIT, transitEntries)
+        if (itemEntries.isNotEmpty()) {
+            sections[ShulkerSectionType.ITEM] = ShulkerSection(ShulkerSectionType.ITEM, itemEntries)
         }
 
         if (selectedId == null && sections.values.any { it.entries.isNotEmpty() }) {
@@ -185,7 +185,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         }
 
         var items = selected.items.ifEmpty {
-            WTFClient.deserializeNbtToItems(selected.cachedContentsNbt)
+            selected.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems) ?: emptyList()
         }
 
         val cellSize = (22 * guiScale).toInt()
@@ -212,7 +212,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         val nameColor = when (selected.section) {
             "block" -> 0xFFFFAA00.toInt()
             "inv" -> 0xFF55FF55.toInt()
-            "transit" -> 0xFFFFAA55.toInt()
+            "item" -> 0xFFFFAA55.toInt()
             else -> 0xFFFFFFFF.toInt()
         }
         graphics.drawString(font, selected.name, previewX, nameY, nameColor, false)
@@ -222,12 +222,12 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
                 val loc = selected.location
                 if (loc.contains(':')) {
                     val dim = loc.substringBeforeLast(':')
-                    val coords = loc.substringAfterLast(':').replace("_", ", ")
+                    val coords = loc.substringAfterLast(':')
                     "$dim at $coords"
                 } else loc
             }
             "inv" -> slotLabel(selected.location)
-            "transit" -> "In Transit"
+            "item" -> "In Transit: ${selected.location}"
             else -> ""
         }
         graphics.drawString(font, Component.literal(detailText), previewX, nameY + (12 * guiScale).toInt(), 0xFF808080.toInt(), false)

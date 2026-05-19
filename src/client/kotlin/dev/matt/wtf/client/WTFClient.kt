@@ -18,12 +18,14 @@ import net.fabricmc.loader.api.FabricLoader
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.components.Button
 import net.minecraft.client.gui.screens.inventory.ShulkerBoxScreen
+import net.minecraft.world.phys.BlockHitResult
 import net.minecraft.core.BlockPos
 import net.minecraft.core.NonNullList
 import net.minecraft.core.component.DataComponents
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.network.chat.Component
 import net.minecraft.resources.Identifier
+import net.minecraft.resources.ResourceKey
 import net.minecraft.world.Container
 import net.minecraft.world.entity.player.Player
 import net.minecraft.world.entity.item.ItemEntity
@@ -90,9 +92,7 @@ object WTFClient : ClientModInitializer {
         .setPrettyPrinting()
         .registerTypeAdapter(object : com.google.gson.reflect.TypeToken<ByteArray?>() {}.type, byteArrayAdapter)
         .create()
-    private val blockMoods = HashMap<String, ShulkerState>()
-    private val invMoods = HashMap<String, ShulkerState>()
-    private val transitMoods = HashMap<String, ShulkerState>()
+    private val trackedShulkers = HashMap<String, ShulkerState>()
     private var currentWorldId: String? = null
     private var nextSerial = 1
     private var debugMode = true
@@ -104,6 +104,40 @@ object WTFClient : ClientModInitializer {
     private var tickCounter = 0
 
     private val transitOrder = ArrayDeque<String>()
+    private val pendingItemEntities = mutableListOf<PendingItemEntity>()
+
+    data class PendingItemEntity(
+        val uuid: String,
+        val pos: BlockPos,
+        val tick: Int,
+        var found: Boolean = false
+    )
+
+    fun onEntityRemoved(entityId: Int, reason: net.minecraft.world.entity.Entity.RemovalReason) {
+        val eidStr = entityId.toString()
+        val shulker = trackedShulkers.values.find { it.entity_id == eidStr && it.state == "item" } ?: return
+
+        val mc = Minecraft.getInstance()
+        val player = mc.player ?: return
+
+        // Check if player is near last known coords
+        val coords = shulker.coords.split(",").mapNotNull { it.toDoubleOrNull() }
+        if (coords.size == 3) {
+            val distSq = player.distanceToSqr(coords[0], coords[1], coords[2])
+            if (distSq < 64.0) { // 8 blocks radius
+                shulker.state = "inv"
+                shulker.entity_id = ""
+                shulker.last_update_time = System.currentTimeMillis().toString()
+                shulker.from = "entity_removed"
+                transitOrder.remove(shulker.uuid)
+                transitOrder.addLast(shulker.uuid)
+                if (shulker.happy) notify("§7item§f → §ainv§f §7(${shulker.name})§f")
+                scanQueued = true
+                throttleTicks = 10 // Increase buffer to 10 ticks (~500ms) for network sync
+                save()
+            }
+        }
+    }
 
     private var prevHeldUUID: String? = null
     private var prevSelectedSlot: Int = -1
@@ -111,23 +145,113 @@ object WTFClient : ClientModInitializer {
     private var throttleTicks: Int = 0
     private val THROTTLE_WINDOW = 5
 
+    private const val TRACK_PREFIX = "?:"
+
+    private fun isMarkedForTracking(stack: ItemStack): Boolean {
+        val name = stack.get(DataComponents.CUSTOM_NAME)?.string
+        return name?.startsWith(TRACK_PREFIX, ignoreCase = true) == true
+    }
+
+    private fun getDisplayNameFromStack(stack: ItemStack): String {
+        val name = stack.get(DataComponents.CUSTOM_NAME)?.string
+        val hasPrefix = name?.startsWith(TRACK_PREFIX, ignoreCase = true) == true
+        return if (hasPrefix && name!!.length > TRACK_PREFIX.length) {
+            name.substring(TRACK_PREFIX.length).trim()
+        } else {
+            "Shulker Box"
+        }
+    }
+
+    private var openChestPos: BlockPos? = null
+    private var openChestInvSnapshot: MutableMap<String, ItemStack>? = null
+
+    private fun handleChestScreen(mc: Minecraft, screen: Any) {
+        val level = mc.level ?: return
+        val hr = mc.hitResult
+        if (hr !is net.minecraft.world.phys.BlockHitResult) return
+        val pos = hr.blockPos
+        val state = level.getBlockState(pos)
+        val blockId = BuiltInRegistries.BLOCK.getKey(state.block).toString()
+        if (!blockId.contains("chest")) return
+
+        openChestPos = pos
+        openChestInvSnapshot = captureInventorySnapshot()
+        log("handleChestScreen: chest at ${blockLocation(pos, level)}, snapshot taken")
+    }
+
+    private fun handleChestClosed() {
+        val pos = openChestPos ?: return
+        val snapshot = openChestInvSnapshot ?: return
+        openChestPos = null
+        openChestInvSnapshot = null
+
+        val mc = Minecraft.getInstance() ?: return
+        val level = mc.level ?: return
+
+        val be = level.getBlockEntity(pos) as? BaseContainerBlockEntity ?: return
+        val chestLoc = blockLocation(pos, level)
+
+        for (i in 0 until be.containerSize) {
+            val stack = be.getItem(i)
+            if (stack.isEmpty || !isShulkerItem(stack)) continue
+
+            val stackUUID = getItemUUID(stack) ?: continue
+            if (!snapshot.containsKey(stackUUID)) continue
+
+            val existing = trackedShulkers[stackUUID] ?: continue
+
+            val cachedNbt = serializeShulkerContents(stack)
+            trackedShulkers[stackUUID] = existing.copy(
+                state = "block",
+                entity_id = "",
+                dim = level.dimension().identifier().toString(),
+                coords = "${pos.x},${pos.y},${pos.z}",
+                last_update_time = System.currentTimeMillis().toString(),
+                from = "chest:inv→block",
+                cachedContents = cachedNbt
+            )
+
+            injectItemUUID(stack, stackUUID)
+            notify("§echest§f ← §ainv§f §7(${existing.name})§f")
+            log("handleChestClosed: tracked shulker in chest at $chestLoc, uuid=$stackUUID")
+        }
+        save()
+    }
+
+    private fun captureInventorySnapshot(): MutableMap<String, ItemStack> {
+        val mc = Minecraft.getInstance() ?: return mutableMapOf()
+        val player = mc.player ?: return mutableMapOf()
+        val snapshot = mutableMapOf<String, ItemStack>()
+        for (i in 0 until player.inventoryMenu.slots.size) {
+            val stack = player.inventoryMenu.getSlot(i).item
+            if (stack.isEmpty || !isShulkerItem(stack)) continue
+            val uuid = getItemUUID(stack) ?: continue
+            snapshot[uuid] = stack.copy()
+        }
+        return snapshot
+    }
+
     data class ShulkerState(
-        val loc: String,
-        val name: String,
-        val happy: Boolean,
-        val uuid: String = "",
-        val contentHash: String = "",
-        val from: String = "",
-        val type: String = "minecraft:shulker_box",
-        val cachedContents: ByteArray? = null
+        val uuid: String,
+        var state: String, // "block", "item", "inv"
+        var entity_id: String = "",
+        var dim: String = "",
+        var coords: String = "", // "x,y,z"
+        var last_update_time: String = "",
+        
+        // Internal metadata
+        var name: String = "",
+        var happy: Boolean = false,
+        var contentHash: String = "",
+        var type: String = "minecraft:shulker_box",
+        var cachedContents: ByteArray? = null,
+        var from: String = ""
     )
 
     data class ShulkerSave(
-        val version: Int = 12,
-        val nextSerial: Int = 1,
-        val block: Map<String, ShulkerState> = emptyMap(),
-        val inv: Map<String, ShulkerState> = emptyMap(),
-        val transit: Map<String, ShulkerState> = emptyMap()
+        val tracked_shulkers: Map<String, ShulkerState> = emptyMap(),
+        val version: Int = 13,
+        val nextSerial: Int = 1
     )
 
     override fun onInitializeClient() {
@@ -148,7 +272,58 @@ object WTFClient : ClientModInitializer {
             }
 
             val player = client.player ?: return@register
+            val level = client.level ?: return@register
             tickCounter++
+
+            // 1. Handle pending item entities (block -> item)
+            val iterator = pendingItemEntities.iterator()
+            val claimedEntityIds = trackedShulkers.values
+                .asSequence()
+                .filter { it.state == "item" }
+                .mapNotNull { it.entity_id.toIntOrNull() }
+                .toMutableSet()
+            while (iterator.hasNext()) {
+                val pending = iterator.next()
+                if (tickCounter - pending.tick > 20) {
+                    iterator.remove()
+                    continue
+                }
+
+                val center = pending.pos.center
+                val items = level.getEntitiesOfClass(ItemEntity::class.java, AABB.ofSize(center, 4.0, 4.0, 4.0))
+                val found = items
+                    .asSequence()
+                    .filter { isShulkerItem(it.item) }
+                    .filter { it.id !in claimedEntityIds }
+                    .minByOrNull { it.distanceToSqr(center.x, center.y, center.z) }
+                if (found != null) {
+                    val shulker = trackedShulkers[pending.uuid]
+                    if (shulker != null) {
+                        shulker.state = "item"
+                        shulker.entity_id = found.id.toString()
+                        shulker.dim = level.dimension().identifier().toString()
+                        shulker.coords = "${found.x},${found.y},${found.z}"
+                        shulker.last_update_time = System.currentTimeMillis().toString()
+                        shulker.from = "tick:found_entity"
+                        log("block -> item: found entity ${found.id} for shulker ${shulker.name} (uuid=${pending.uuid})")
+                        if (shulker.happy) notify("§eblock§f → §7item§f §7(${shulker.name})§f")
+                        claimedEntityIds.add(found.id)
+                    }
+                    iterator.remove()
+                }
+            }
+
+            // 2. Track item entity positions
+            for (shulker in trackedShulkers.values) {
+                if (shulker.state == "item" && shulker.entity_id.isNotEmpty()) {
+                    val entityId = shulker.entity_id.toIntOrNull() ?: continue
+                    val entity = level.getEntity(entityId)
+                    if (entity != null) {
+                        shulker.coords = "${entity.x},${entity.y},${entity.z}"
+                        shulker.last_update_time = System.currentTimeMillis().toString()
+                    }
+                }
+            }
 
             val currentSlot = player.inventory.selectedSlot
             val currentStack = player.inventoryMenu.getSlot(currentSlot).item
@@ -165,8 +340,7 @@ object WTFClient : ClientModInitializer {
                 if (throttleTicks > 0) {
                     throttleTicks--
                 } else {
-                    val level = client.level ?: return@register
-                    scanInventory(level, player)
+                    performInventoryScan(level, player)
                     scanQueued = false
                 }
             }
@@ -235,11 +409,39 @@ object WTFClient : ClientModInitializer {
             load()
         }
 
+        // Detect items being dropped (inv -> item)
+        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientEntityEvents.ENTITY_LOAD.register { entity, world ->
+            if (entity is ItemEntity && isShulkerItem(entity.item)) {
+                val mc = Minecraft.getInstance()
+                val player = mc.player ?: return@register
+                
+                // If shulker spawns very close to player, it's likely a drop
+                val distSq = entity.distanceToSqr(player)
+                if (distSq < 4.0) {
+                    val hash = fingerprintFromItem(entity.item) ?: ""
+                    // Find a shulker in 'inv' state that is missing from recent scan
+                    // Or just find the best match in 'inv' state
+                    val match = trackedShulkers.values.firstOrNull { 
+                        it.state == "inv" && it.contentHash == hash
+                    }
+                    
+                    if (match != null) {
+                        match.state = "item"
+                        match.entity_id = entity.id.toString()
+                        match.dim = world.dimension().identifier().toString()
+                        match.coords = "${entity.x},${entity.y},${entity.z}"
+                        match.last_update_time = System.currentTimeMillis().toString()
+                        match.from = "spawn:drop"
+                        if (match.happy) notify("§ainv§f → §7item§f §7(${match.name})§f")
+                        save()
+                    }
+                }
+            }
+        }
+
         ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
             currentWorldId = null
-            blockMoods.clear()
-            invMoods.clear()
-            transitMoods.clear()
+            trackedShulkers.clear()
             nextSerial = 1
             prevSelectedSlot = -1
             prevHeldUUID = null
@@ -247,6 +449,7 @@ object WTFClient : ClientModInitializer {
             throttleTicks = 0
             tickCounter = 0
             transitOrder.clear()
+            pendingItemEntities.clear()
             logWriter?.close()
             logWriter = null
             logBytesWritten = 0
@@ -255,30 +458,25 @@ object WTFClient : ClientModInitializer {
         ClientPlayerBlockBreakEvents.AFTER.register { world, _, pos, state ->
             val blockId = BuiltInRegistries.BLOCK.getKey(state.block).toString()
             if (!blockId.contains("shulker_box")) return@register
-            val loc = blockLocation(pos, world)
             
-            // Note: world.getBlockEntity(pos) is likely null here as the block is already broken.
-            // We rely on the blockMoods entry matching the location.
-            val key = blockMoods.keys.firstOrNull { blockMoods[it]?.loc == loc } ?: return@register
-            val entry = blockMoods.remove(key)!!
+            val coordStr = "${pos.x},${pos.y},${pos.z}"
+            val dimStr = world.dimension().identifier().toString()
             
-            transitMoods[key] = entry.copy(
-                contentHash = entry.contentHash, // Can't easily re-fingerprint if BE is gone
-                from = "block→transit",
-                type = blockId
-            )
-            transitOrder.addLast(key)
-            save()
-            log("block break: $loc → transitMoods (${entry.name}, uuid=$key, type=$blockId)")
-            if (entry.happy) notify("§eblock§f → §7transit§f §7(${entry.name}§7)")
+            val entry = trackedShulkers.values.firstOrNull { it.state == "block" && it.coords == coordStr && it.dim == dimStr } ?: return@register
+            
+            pendingItemEntities.add(PendingItemEntity(entry.uuid, pos, tickCounter))
+            log("block break: $coordStr ($dimStr) → pending tracking for ${entry.name} (uuid=${entry.uuid})")
         }
 
         ScreenEvents.AFTER_INIT.register { mc, screen, _, _ ->
             val level = mc.level ?: return@register
             val player = mc.player ?: return@register
-            scanInventory(level, player)
+            performInventoryScan(level, player)
             if (screen is ShulkerBoxScreen) {
                 handleShulkerScreen(mc, level, player, screen)
+            }
+            if (screen is AbstractContainerScreenAccessor) {
+                handleChestScreen(mc, screen)
             }
         }
     }
@@ -291,7 +489,9 @@ object WTFClient : ClientModInitializer {
         val shulkerType = BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).block).toString()
         val displayName = screen.title.string
         val contentHash = fingerprintContainer(container, shulkerType, be?.components()?.get(DataComponents.CUSTOM_NAME))
-        val loc = blockLocation(pos, level)
+        
+        val coordStr = "${pos.x},${pos.y},${pos.z}"
+        val dimStr = level.dimension().identifier().toString()
 
         // Get held shulker UUID to exclude from hash matching
         val heldStack = player.inventoryMenu.getSlot(player.inventory.selectedSlot).item
@@ -299,58 +499,55 @@ object WTFClient : ClientModInitializer {
 
         val beUUID = be?.let { getBlockEntityUUID(it) }
         var currentKey = when {
-            beUUID != null && blockMoods.containsKey(beUUID) -> beUUID
-            beUUID != null && invMoods.containsKey(beUUID) -> {
-                val entry = invMoods.remove(beUUID)!!
-                blockMoods[beUUID] = entry.copy(loc = loc, from = "hss:inv→block (uuid)")
-                if (entry.happy && entry.loc != loc) notify("§ainv§f → §eblock§f §7(${entry.name})§7")
+            beUUID != null && trackedShulkers.containsKey(beUUID) -> {
+                val entry = trackedShulkers[beUUID]!!
+                if (entry.state != "block" || entry.coords != coordStr || entry.dim != dimStr) {
+                    entry.state = "block"
+                    entry.entity_id = ""
+                    entry.coords = coordStr
+                    entry.dim = dimStr
+                    entry.last_update_time = System.currentTimeMillis().toString()
+                    entry.from = "hss:update (uuid)"
+                    if (entry.happy) notify("§aupdated§f shulker: §e${entry.name}§f")
+                }
                 beUUID
             }
-            beUUID != null && transitMoods.containsKey(beUUID) -> {
-                val entry = transitMoods.remove(beUUID)!!
-                blockMoods[beUUID] = entry.copy(loc = loc, from = "hss:transit→block (uuid)")
-                if (entry.happy && entry.loc != loc) notify("§7transit§f → §eblock§f §7(${entry.name})§7")
-                beUUID
-            }
-            else -> blockMoods.keys.firstOrNull { blockMoods[it]?.loc == loc }
+            else -> trackedShulkers.values.firstOrNull { it.state == "block" && it.coords == coordStr && it.dim == dimStr }?.uuid
         }
 
         // Fallback to hash if UUID didn't find anything or is missing
         if (currentKey == null) {
-            val invKey = invMoods.keys.firstOrNull { k ->
-                k != heldUUID && invMoods[k]?.contentHash == contentHash
+            val hashMatch = trackedShulkers.values.firstOrNull { k ->
+                k.uuid != heldUUID && k.contentHash == contentHash && (k.state == "inv" || k.state == "item")
             }
-            if (invKey != null) {
-                val entry = invMoods.remove(invKey)!!
-                blockMoods[invKey] = entry.copy(loc = loc, from = "hss:inv→block (hash)")
-                if (entry.happy && entry.loc != loc) notify("§ainv§f → §eblock§f §7(${entry.name})§7")
-                currentKey = invKey
-                log("handleShulkerScreen: hash-matched inv key=$invKey")
+            if (hashMatch != null) {
+                hashMatch.state = "block"
+                hashMatch.entity_id = ""
+                hashMatch.coords = coordStr
+                hashMatch.dim = dimStr
+                hashMatch.last_update_time = System.currentTimeMillis().toString()
+                hashMatch.from = "hss:hash_match"
+                if (hashMatch.happy) notify("§amatch§f → §eblock§f §7(${hashMatch.name})§7")
+                currentKey = hashMatch.uuid
+                log("handleShulkerScreen: hash-matched key=$currentKey")
             } else {
-                val transitKey = transitMoods.keys.firstOrNull { k ->
-                    k != heldUUID && transitMoods[k]?.contentHash == contentHash
-                }
-                if (transitKey != null) {
-                    val entry = transitMoods.remove(transitKey)!!
-                    blockMoods[transitKey] = entry.copy(loc = loc, from = "hss:transit→block (hash)")
-                    if (entry.happy && entry.loc != loc) notify("§7transit§f → §eblock§f §7(${entry.name})§7")
-                    currentKey = transitKey
-                    log("handleShulkerScreen: hash-matched transit key=$transitKey")
-                } else {
-                    log("handleShulkerScreen: no match found, loc=$loc beUUID=$beUUID heldUUID=$heldUUID")
-                }
+                log("handleShulkerScreen: no match found, coords=$coordStr beUUID=$beUUID heldUUID=$heldUUID")
             }
         } else {
-            log("handleShulkerScreen: uuid-matched key=$currentKey")
+            log("handleShulkerScreen: matched key=$currentKey")
         }
 
-        val currentEntry = currentKey?.let { blockMoods[it] }
+        val currentEntry = currentKey?.let { trackedShulkers[it] }
         val isHappy = currentEntry?.happy ?: false
 
         if (currentKey != null) {
             val cachedNbt = serializeContainerToNbt(container)
             log("handleShulkerScreen: currentKey=$currentKey cachedNbt=${cachedNbt?.size ?: "NULL"}")
-            blockMoods[currentKey] = blockMoods[currentKey]!!.copy(name = displayName, contentHash = contentHash, type = shulkerType, cachedContents = cachedNbt)
+            val entry = trackedShulkers[currentKey]!!
+            entry.name = displayName
+            entry.contentHash = contentHash
+            entry.type = shulkerType
+            entry.cachedContents = cachedNbt
         }
 
         val button = Button.builder(Component.literal(if (isHappy) "\u263A" else "\u2639")) { btn ->
@@ -366,18 +563,28 @@ object WTFClient : ClientModInitializer {
                 be?.applyComponents(be.components(), patch)
             }
 
-            val entry = blockMoods[finalUUID]
+            val entry = trackedShulkers[finalUUID]
             val newHappy = !(entry?.happy ?: false)
             
-            blockMoods[finalUUID] = ShulkerState(
-                loc = loc,
-                name = displayName,
-                happy = newHappy,
-                uuid = finalUUID,
-                contentHash = contentHash,
-                from = if (entry == null) "new-entry" else "toggle",
-                type = shulkerType
-            )
+            if (entry == null) {
+                trackedShulkers[finalUUID] = ShulkerState(
+                    uuid = finalUUID,
+                    state = "block",
+                    dim = dimStr,
+                    coords = coordStr,
+                    last_update_time = System.currentTimeMillis().toString(),
+                    name = displayName,
+                    happy = newHappy,
+                    contentHash = contentHash,
+                    from = "new-entry",
+                    type = shulkerType
+                )
+            } else {
+                entry.happy = newHappy
+                entry.name = displayName
+                entry.last_update_time = System.currentTimeMillis().toString()
+                entry.from = "toggle"
+            }
             
             currentKey = finalUUID
             btn.setMessage(Component.literal(if (newHappy) "\u263A" else "\u2639"))
@@ -391,200 +598,171 @@ object WTFClient : ClientModInitializer {
         Screens.getButtons(screen).add(button)
     }
 
-    private fun scanInventory(level: Level, player: Player) {
-        val inv = player.inventoryMenu
-        var changed = false
-
-        val heldStack = player.inventoryMenu.getSlot(player.inventory.selectedSlot).item
-        val heldUUID = getItemUUID(heldStack)
-
-        for (i in 0 until inv.slots.size) {
-            val stack = inv.getSlot(i).item
-            if (stack.isEmpty || !isShulkerItem(stack)) continue
-
-            val hash = fingerprintFromItem(stack) ?: continue
-            val stackUUID = ensureItemUUID(stack)
-            val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
-            val locKey = indexToKey(i)
-
-            // Priority 1: Direct UUID match in inventory
-            val existingInInv = invMoods[stackUUID]
-            if (existingInInv != null) {
-                if (existingInInv.loc != locKey) {
-                    invMoods[stackUUID] = existingInInv.copy(loc = locKey, from = "scan:uuid-reloc", type = type)
-                    changed = true
-                }
-                continue
-            }
-
-            // Priority 2: UUID match in transit or block
-            val transitEntry = transitMoods.remove(stackUUID)
-            if (transitEntry != null) {
-                invMoods[stackUUID] = transitEntry.copy(loc = locKey, from = "scan:transit→inv", type = type)
-                if (transitEntry.happy) notify("§7transit§f → §ainv§f §7(${transitEntry.name})§7")
-                changed = true
-                continue
-            }
-
-            val blockEntry = blockMoods[stackUUID]
-            if (blockEntry != null && isBlockStale(blockEntry.loc, level)) {
-                blockMoods.remove(stackUUID)
-                invMoods[stackUUID] = blockEntry.copy(loc = locKey, from = "scan:block→inv", type = type)
-                if (blockEntry.happy) notify("§eblock§f → §ainv§f §7(${blockEntry.name})§7")
-                changed = true
-                continue
-            }
-
-            // Priority 3: Fallback to hash if UUID is new or mismatching (exclude held UUID)
-            val hashMatch = transitMoods.keys.firstOrNull { k ->
-                k != heldUUID && transitMoods[k]?.contentHash == hash
-            }
-            if (hashMatch != null) {
-                val entry = transitMoods.remove(hashMatch)!!
-                invMoods[stackUUID] = entry.copy(loc = locKey, uuid = stackUUID, from = "scan:hash:transit→inv", type = type)
-                if (entry.happy) notify("§7transit§f → §ainv§f §7(${entry.name})§7")
-                changed = true
-                continue
-            }
-
-            // New shulker discovery
-            invMoods[stackUUID] = ShulkerState(
-                loc = locKey,
-                name = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "???",
-                happy = false,
-                uuid = stackUUID,
-                contentHash = hash,
-                from = "scan:new",
-                type = type
-            )
-        }
-        if (changed) save()
-    }
-
-    private fun pickupScan(player: Player) {
+    private fun performInventoryScan(level: Level, player: Player) {
         val inv = player.inventoryMenu
         val currentSlot = player.inventory.selectedSlot
         val heldStack = player.inventoryMenu.getSlot(currentSlot).item
-        val heldUUID = getItemUUID(heldStack)
-
-        var changed = false
-        if (debugVerbose) log("pickupScan: scan start, ${inv.slots.size} slots")
+        
+        // 1. Collect all shulker stacks currently in inventory/cursor
+        val inventoryShulkers = mutableListOf<Triple<ItemStack, String, String>>() // Stack, locKey, fingerprint
         for (i in 0 until inv.slots.size) {
             val stack = inv.getSlot(i).item
             if (stack.isEmpty || !isShulkerItem(stack)) continue
+            inventoryShulkers.add(Triple(stack, indexToKey(i), fingerprintFromItem(stack) ?: ""))
+        }
+        if (!inv.carried.isEmpty && isShulkerItem(inv.carried)) {
+            inventoryShulkers.add(Triple(inv.carried, "cursor", fingerprintFromItem(inv.carried) ?: ""))
+        }
 
-            val hash = fingerprintFromItem(stack) ?: continue
-            val stackUUID = getItemUUID(stack)
-            val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
-            val locKey = indexToKey(i)
+        val foundUUIDs = mutableSetOf<String>()
+        var changed = false
 
-            if (stackUUID != null) {
-                if (invMoods.containsKey(stackUUID)) {
-                    val entry = invMoods[stackUUID]!!
-                    if (entry.loc != locKey) {
-                        invMoods[stackUUID] = entry.copy(loc = locKey, from = "pickup:reloc", type = type)
-                        changed = true
+        // 2. Pass 1: Match by existing UUID (Highest confidence)
+        for (ss in inventoryShulkers) {
+            val uuid = getItemUUID(ss.first)
+            if (uuid != null && trackedShulkers.containsKey(uuid)) {
+                val entry = trackedShulkers[uuid]!!
+                if (entry.state != "inv" || entry.coords != ss.second) {
+                    log("scan: matched UUID $uuid in ${ss.second}, state update ${entry.state} -> inv")
+                    entry.state = "inv"
+                    entry.entity_id = ""
+                    entry.coords = ss.second
+                    entry.dim = level.dimension().identifier().toString()
+                    entry.last_update_time = System.currentTimeMillis().toString()
+                    entry.from = "scan:uuid"
+                    changed = true
+                }
+                foundUUIDs.add(uuid)
+            } else if (uuid != null) {
+                log("scan: found item with UUID $uuid but not in tracked map")
+            }
+        }
+
+        // 3. Pass 2: Match by hash/state (For items that lost NBT or were just picked up)
+        for (ss in inventoryShulkers) {
+            val currentUUID = getItemUUID(ss.first)
+            if (currentUUID != null && foundUUIDs.contains(currentUUID)) continue
+
+            val hash = ss.third
+
+            val stackType = BuiltInRegistries.ITEM.getKey(ss.first.item).toString()
+            val stackName = ss.first.get(DataComponents.CUSTOM_NAME)?.string ?: "???"
+            val transitMatchUuid = transitOrder
+                .mapIndexedNotNull { index, candidateUuid ->
+                    if (candidateUuid in foundUUIDs) return@mapIndexedNotNull null
+                    val candidate = trackedShulkers[candidateUuid] ?: return@mapIndexedNotNull null
+                    val ageMs = System.currentTimeMillis() - (candidate.last_update_time.toLongOrNull() ?: 0L)
+                    if (candidate.from != "entity_removed" || ageMs > 10_000) return@mapIndexedNotNull null
+                    if (candidate.type != stackType) return@mapIndexedNotNull null
+                    if (candidate.name != stackName && candidate.name.isNotEmpty()) return@mapIndexedNotNull null
+
+                    val candidateCoords = parseVec3(candidate.coords)
+                    val distSq = if (candidateCoords != null) {
+                        player.distanceToSqr(candidateCoords.first, candidateCoords.second, candidateCoords.third)
+                    } else {
+                        Double.MAX_VALUE
                     }
-                    continue
+                    Triple(candidateUuid, distSq, index)
                 }
+                .minWithOrNull(compareBy<Triple<String, Double, Int>> { it.second }.thenBy { it.third })
+                ?.first
 
-                val transitEntry = transitMoods.remove(stackUUID)
-                if (transitEntry != null) {
-                    invMoods[stackUUID] = transitEntry.copy(loc = locKey, from = "pickup:transit→inv", type = type)
-                    if (transitEntry.happy) notify("§7transit§f → §ainv§f §7(${transitEntry.name})§7")
-                    changed = true
-                    continue
-                }
-
-                val blockEntry = blockMoods[stackUUID]
-                if (blockEntry != null && isBlockStale(blockEntry.loc, player.level())) {
-                    blockMoods.remove(stackUUID)
-                    invMoods[stackUUID] = blockEntry.copy(loc = locKey, from = "pickup:block→inv", type = type)
-                    if (blockEntry.happy) notify("§eblock§f → §ainv§f §7(${blockEntry.name})§7")
-                    changed = true
-                    continue
-                }
-            }
-
-            // Fallback 1: Match by hash if UUID is unknown or missing (exclude held UUID)
-            val hashMatch = transitMoods.keys.firstOrNull { k ->
-                k != heldUUID && transitMoods[k]?.contentHash == hash
-            }
-            if (hashMatch != null) {
-                val entry = transitMoods.remove(hashMatch)!!
-                val finalUUID = stackUUID ?: ensureItemUUID(stack)
-                invMoods[finalUUID] = entry.copy(loc = locKey, uuid = finalUUID, from = "pickup:hash:transit→inv", type = type)
-                if (entry.happy) notify("§7transit§f → §ainv§f §7(${entry.name})§7")
+            if (transitMatchUuid != null) {
+                val match = trackedShulkers[transitMatchUuid]!!
+                log("scan: transit-matched ${ss.second} to tracked UUID ${match.uuid}")
+                injectItemUUID(ss.first, match.uuid)
+                match.state = "inv"
+                match.entity_id = ""
+                match.coords = ss.second
+                match.dim = level.dimension().identifier().toString()
+                match.last_update_time = System.currentTimeMillis().toString()
+                match.from = "scan:transit_match"
+                foundUUIDs.add(match.uuid)
+                transitOrder.remove(match.uuid)
                 changed = true
                 continue
             }
 
-            // Fallback 2: Robust Reconciliation (exclude held UUID)
-            val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: ""
-            val plausibleMatches = transitMoods.filter { (k, v) ->
-                k != heldUUID && v.type == type && (v.name == stackName || stackName.isEmpty())
-            }.toMap()
+            if (hash.isEmpty()) continue
 
-            val matchKey = if (plausibleMatches.isNotEmpty()) {
-                val happyMatches = plausibleMatches.filterValues { it.happy }
-                if (happyMatches.isNotEmpty()) {
-                    happyMatches.keys.firstOrNull { happyMatches[it]?.contentHash == hash } ?: happyMatches.keys.first()
-                } else {
-                    plausibleMatches.keys.first()
-                }
-            } else null
-
-            if (matchKey != null) {
-                val entry = transitMoods.remove(matchKey)!!
-                val finalUUID = stackUUID ?: ensureItemUUID(stack)
-                invMoods[finalUUID] = entry.copy(loc = locKey, uuid = finalUUID, from = "pickup:recon:transit→inv", contentHash = hash, type = type)
-                log("pickupScan: recon match transit→inv, uuid=$finalUUID at $locKey (was $matchKey)")
-                if (entry.happy) notify("§7transit§f → §ainv§f §7(${entry.name})§7 §7(reconciled)§f")
-                changed = true
-                continue
+            // Try to match with an unclaimed shulker in our map
+            val match = trackedShulkers.values.firstOrNull { 
+                it.uuid !in foundUUIDs && it.contentHash == hash && (it.state == "inv" || it.state == "item" || it.state == "block")
             }
 
-            // New shulker discovery
-            val finalUUID = stackUUID ?: ensureItemUUID(stack)
-            if (!invMoods.containsKey(finalUUID)) {
-                invMoods[finalUUID] = ShulkerState(
-                    loc = locKey,
-                    name = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "???",
+            if (match != null) {
+                val uuid = match.uuid
+                log("scan: hash-matched ${ss.second} (hash=${hash.take(8)}) to tracked UUID $uuid")
+                injectItemUUID(ss.first, uuid)
+                match.state = "inv"
+                match.entity_id = ""
+                match.coords = ss.second
+                match.dim = level.dimension().identifier().toString()
+                match.last_update_time = System.currentTimeMillis().toString()
+                match.from = "scan:hash_match"
+                foundUUIDs.add(uuid)
+                transitOrder.remove(uuid)
+                changed = true
+            } else {
+                val nameMatch = trackedShulkers.values.firstOrNull {
+                    it.uuid !in foundUUIDs &&
+                        it.happy &&
+                        it.type == stackType &&
+                        it.name == stackName
+                }
+
+                if (nameMatch != null) {
+                    log("scan: name-matched ${ss.second} to tracked UUID ${nameMatch.uuid}")
+                    injectItemUUID(ss.first, nameMatch.uuid)
+                    nameMatch.state = "inv"
+                    nameMatch.entity_id = ""
+                    nameMatch.coords = ss.second
+                    nameMatch.dim = level.dimension().identifier().toString()
+                    nameMatch.last_update_time = System.currentTimeMillis().toString()
+                    nameMatch.from = "scan:name_match"
+                    foundUUIDs.add(nameMatch.uuid)
+                    transitOrder.remove(nameMatch.uuid)
+                    changed = true
+                    continue
+                }
+
+                // New discovery
+                val newUUID = ensureItemUUID(ss.first)
+                log("scan: new shulker discovered in ${ss.second}, assigned UUID $newUUID")
+                trackedShulkers[newUUID] = ShulkerState(
+                    uuid = newUUID,
+                    state = "inv",
+                    dim = level.dimension().identifier().toString(),
+                    coords = ss.second,
+                    last_update_time = System.currentTimeMillis().toString(),
+                    name = ss.first.get(DataComponents.CUSTOM_NAME)?.string ?: "???",
                     happy = false,
-                    uuid = finalUUID,
                     contentHash = hash,
-                    from = "pickup:auto",
-                    type = type
+                    from = "scan:new",
+                    type = BuiltInRegistries.ITEM.getKey(ss.first.item).toString()
                 )
+                foundUUIDs.add(newUUID)
+                transitOrder.remove(newUUID)
                 changed = true
             }
         }
 
-        // Detect items leaving inventory (exclude held UUID)
-        for ((k, entry) in invMoods.toList()) {
-            if (k == heldUUID) continue // Don't move held shulker to transit
-
-            val idx = keyToIndex(entry.loc) ?: continue
-            if (idx < 0 || idx >= inv.slots.size) continue
-            val stack = inv.getSlot(idx).item
-            if (!stack.isEmpty && isShulkerItem(stack)) {
-                val currentUUID = getItemUUID(stack)
-                if (currentUUID == k) continue // Still there
+        // 4. Cleanup: Handle items leaving inventory
+        for (entry in trackedShulkers.values) {
+            if (entry.state == "inv" && entry.uuid !in foundUUIDs) {
+                val lastUpdate = entry.last_update_time.toLongOrNull() ?: 0L
+                val elapsed = System.currentTimeMillis() - lastUpdate
+                if (elapsed > 5000) { // 5 seconds grace
+                     log("scan: shulker ${entry.uuid} (${entry.name}) is missing from inventory for ${elapsed}ms, but NOT flipping to item state per user instruction")
+                }
             }
-
-            // Shulker is gone from this slot
-            transitMoods[k] = entry.copy(from = "inv→transit")
-            transitOrder.addLast(k)
-            invMoods.remove(k)
-            if (entry.happy) notify("§ainv§f → §7transit§f §7(${entry.name})§f")
-            changed = true
         }
-        
+
         if (changed) {
-            trimTransitCache()
             save()
         }
     }
+
 
     @JvmStatic
     fun onShulkerPlaced(player: Player, pos: BlockPos, hand: InteractionHand, stack: ItemStack) {
@@ -597,36 +775,29 @@ object WTFClient : ClientModInitializer {
         val slotIdx = if (hand == InteractionHand.MAIN_HAND) player.inventory.selectedSlot + 36 else 45
         val locKey = indexToKey(slotIdx)
         
-        // Priority 1: Deterministic slot-based match (Most reliable)
-        var resolvedKey = invMoods.entries.firstOrNull { it.value.loc == locKey }?.key
+        // Priority 1: UUID from stack
+        var resolvedKey = uuid
         
-        // Priority 2: Check if pickupScan already moved this specific slot's item to transit
+        // Priority 2: Deterministic slot-based match (If state is inv)
         if (resolvedKey == null) {
-            resolvedKey = transitMoods.entries.firstOrNull { it.value.loc == locKey && it.value.from == "inv→transit" }?.key
+            resolvedKey = trackedShulkers.values.firstOrNull { it.state == "inv" && it.coords == locKey }?.uuid
         }
-
-        // Priority 3: UUID from stack (if server didn't strip it)
-        if (resolvedKey == null) resolvedKey = uuid
         
-        // Priority 4: Fallback to hash/name match (If slot history is lost)
+        // Priority 3: Fallback to hash/name match
         if (resolvedKey == null) {
             val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: ""
-            val plausibleMatches = transitMoods.filterValues { it.type == type && (it.name == stackName || stackName.isEmpty()) }
-            resolvedKey = if (plausibleMatches.isNotEmpty()) {
-                val happyMatches = plausibleMatches.filterValues { it.happy }
-                if (happyMatches.isNotEmpty()) {
-                    happyMatches.keys.firstOrNull { happyMatches[it]?.contentHash == hash } ?: happyMatches.keys.first()
-                } else {
-                    plausibleMatches.keys.first()
-                }
-            } else null
+            val matches = trackedShulkers.values.filter { 
+                it.type == type && (it.name == stackName || stackName.isEmpty()) && it.contentHash == hash
+            }
+            resolvedKey = matches.firstOrNull { it.happy }?.uuid ?: matches.firstOrNull()?.uuid
         }
 
         // Final Fallback: New shulker
         val finalUUID = resolvedKey ?: java.util.UUID.randomUUID().toString()
-        val entry = invMoods.remove(finalUUID) ?: transitMoods.remove(finalUUID) ?: blockMoods[finalUUID]
+        val entry = trackedShulkers[finalUUID]
         
-        val loc = blockLocation(pos, player.level())
+        val coordStr = "${pos.x},${pos.y},${pos.z}"
+        val dimStr = player.level().dimension().identifier().toString()
         val be = player.level().getBlockEntity(pos) as? BaseContainerBlockEntity
         
         if (be != null) {
@@ -645,55 +816,34 @@ object WTFClient : ClientModInitializer {
         
         val displayName = if (stack.has(DataComponents.CUSTOM_NAME)) stack.get(DataComponents.CUSTOM_NAME)?.string ?: "???" else entry?.name ?: "Shulker Box"
         
-        val newState = ShulkerState(
-            loc = loc,
-            name = displayName,
-            happy = entry?.happy ?: false,
-            uuid = finalUUID,
-            contentHash = blockHash,
-            from = "place",
-            type = type
-        )
+        if (entry == null) {
+            trackedShulkers[finalUUID] = ShulkerState(
+                uuid = finalUUID,
+                state = "block",
+                dim = dimStr,
+                coords = coordStr,
+                last_update_time = System.currentTimeMillis().toString(),
+                name = displayName,
+                happy = false,
+                contentHash = blockHash,
+                from = "place:new",
+                type = type
+            )
+        } else {
+            entry.state = "block"
+            entry.entity_id = ""
+            entry.dim = dimStr
+            entry.coords = coordStr
+            entry.last_update_time = System.currentTimeMillis().toString()
+            entry.contentHash = blockHash
+            entry.from = "place"
+            if (entry.happy) notify("§aplaced§f → §eblock§f §7(${entry.name})§f")
+        }
         
-        blockMoods[finalUUID] = newState
-        if (newState.happy) notify("§aplaced§f → §eblock§f §7(${newState.name})§f")
-        log("shulker placed: blockMoods updated ($loc, name=${newState.name}, uuid=$finalUUID, from_slot=$locKey)")
+        log("shulker placed: trackedShulkers updated ($coordStr, name=$displayName, uuid=$finalUUID, from_slot=$locKey)")
         save()
     }
 
-    private fun findPlacedKey(player: Player, pos: BlockPos): String? {
-        val level = player.level()
-        val be = level.getBlockEntity(pos) as? BaseContainerBlockEntity ?: return null
-        val beUUID = getBlockEntityUUID(be)
-        if (beUUID != null) return beUUID
-
-        val type = BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).block).toString()
-        val hash = fingerprintContainer(be, type, be.getCustomName())
-        
-        return invMoods.keys.firstOrNull { invMoods[it]?.contentHash == hash }
-            ?: transitMoods.keys.firstOrNull { transitMoods[it]?.contentHash == hash }
-    }
-
-    private fun isBlockStale(loc: String, level: Level): Boolean {
-        val pos = parseBlockLoc(loc) ?: return true
-        if (!level.isLoaded(pos)) return false
-        val state = level.getBlockState(pos)
-        val blockId = BuiltInRegistries.BLOCK.getKey(state.block).toString()
-        return !blockId.contains("shulker_box")
-    }
-
-    private fun trimTransitCache() {
-        transitOrder.removeAll { it !in transitMoods }
-        val nonHappy = transitMoods.filterValues { !it.happy }
-        if (nonHappy.size <= MAX_TRANSIT_SPARE) return
-        val excess = nonHappy.size - MAX_TRANSIT_SPARE
-        val evict = transitOrder.filter { it in nonHappy }.take(excess)
-        for (key in evict) {
-            val entry = transitMoods.remove(key)
-            log("trimTransitCache: removed ${entry?.name ?: "?"} (non-happy, cache full, uuid=$key)")
-        }
-        transitOrder.removeAll(evict.toSet())
-    }
 
     private fun resolveHappyShulkers(): List<ShulkerEntry> {
         val mc = Minecraft.getInstance()
@@ -701,64 +851,31 @@ object WTFClient : ClientModInitializer {
         val player = mc.player ?: return emptyList()
         val entries = mutableListOf<ShulkerEntry>()
 
-        log("resolveHappyShulkers: blockMoods=${blockMoods.size}, invMoods=${invMoods.size}, transitMoods=${transitMoods.size}")
+        log("resolveHappyShulkers: trackedShulkers=${trackedShulkers.size}")
 
-        for ((key, entry) in blockMoods) {
+        for (entry in trackedShulkers.values) {
             if (!entry.happy) continue
-            log("resolveHappyShulkers: block key=$key cached=${entry.cachedContents?.size ?: "null"}")
-            val shulkerEntry = resolveBlockEntry(level, entry.loc, entry.name, key, 0)
-            if (shulkerEntry != null) entries.add(shulkerEntry)
-        }
-
-        for ((key, entry) in invMoods) {
-            if (!entry.happy) continue
-            log("resolveHappyShulkers: inv key=$key cached=${entry.cachedContents?.size ?: "null"}")
-            val shulkerEntry = resolveInvEntry(player, entry.loc, entry.name, key, 0)
-            if (shulkerEntry != null) entries.add(shulkerEntry)
-        }
-
-        for ((key, entry) in transitMoods) {
-            if (!entry.happy) continue
-            log("resolveHappyShulkers: transit key=$key cached=${entry.cachedContents?.size ?: "null"}")
+            
             val item = BuiltInRegistries.ITEM.get(Identifier.parse(entry.type)).orElse(null)
             val stack = if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
-            entries.add(ShulkerEntry(key, Component.literal(entry.name), stack, "transit", entry.loc, key, 0, cachedContentsNbt = entry.cachedContents))
+            val items = entry.cachedContents?.let { deserializeNbtToItems(it) } ?: List(27) { ItemStack.EMPTY }
+            
+            val shulkerEntry = ShulkerEntry(
+                id = entry.uuid,
+                name = Component.literal(entry.name),
+                stack = stack,
+                section = entry.state,
+                location = if (entry.state == "block") "${entry.dim}:${entry.coords}" else entry.coords,
+                shortHash = entry.uuid.take(6),
+                serial = 0,
+                items = items,
+                cachedContentsNbt = entry.cachedContents
+            )
+            entries.add(shulkerEntry)
         }
 
         log("resolveHappyShulkers: returning ${entries.size} entries")
         return entries
-    }
-
-    private fun resolveBlockEntry(level: Level, loc: String, storedName: String, uuid: String, serial: Int): ShulkerEntry? {
-        val stateEntry = blockMoods[uuid]
-        val pos = parseBlockLoc(loc) ?: return null
-        val items = stateEntry?.cachedContents?.let { deserializeNbtToItems(it) } ?: emptyList()
-        if (!level.isLoaded(pos)) {
-            val item = stateEntry?.let { BuiltInRegistries.ITEM.get(Identifier.parse(it.type)).orElse(null) }
-            val stack = if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
-            log("resolveBlockEntry: uuid=$uuid cachedContents=${stateEntry?.cachedContents?.size ?: "null"} items=${items.count { !it.isEmpty }}")
-            return ShulkerEntry(uuid, Component.literal(storedName), stack, "block", loc, uuid, serial, items = items, cachedContentsNbt = stateEntry?.cachedContents)
-        }
-        
-        val state = level.getBlockState(pos)
-        val blockId = BuiltInRegistries.BLOCK.getKey(state.block).toString()
-        val stack = if (blockId.contains("shulker_box"))
-            ItemStack(state.block)
-        else {
-            val item = stateEntry?.let { BuiltInRegistries.ITEM.get(Identifier.parse(it.type)).orElse(null) }
-            if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
-        }
-        log("resolveBlockEntry: uuid=$uuid cachedContents=${stateEntry?.cachedContents?.size ?: "null"} items=${items.count { !it.isEmpty }}")
-        return ShulkerEntry(uuid, Component.literal(storedName), stack, "block", loc, uuid, serial, items = items, cachedContentsNbt = stateEntry?.cachedContents)
-    }
-
-    private fun resolveInvEntry(player: Player, loc: String, storedName: String, uuid: String, serial: Int): ShulkerEntry? {
-        val stateEntry = invMoods[uuid]
-        val slot = keyToIndex(loc) ?: return null
-        val stack = player.inventoryMenu.getSlot(slot).item
-        if (stack.isEmpty || !isShulkerItem(stack)) return null
-        val items = stateEntry?.cachedContents?.let { deserializeNbtToItems(it) } ?: emptyList()
-        return ShulkerEntry(uuid, Component.literal(storedName), stack, "inv", loc, uuid, serial, items = items, cachedContentsNbt = stateEntry?.cachedContents)
     }
 
     private fun getValidShulkerPos(mc: Minecraft, level: Level): BlockPos? {
@@ -807,12 +924,13 @@ object WTFClient : ClientModInitializer {
     }
 
     private fun fingerprintFromItem(stack: ItemStack): String? {
-        val container = stack.get(DataComponents.CONTAINER) ?: return null
+        if (!isShulkerItem(stack)) return null
+        val container = stack.get(DataComponents.CONTAINER)
         val items = NonNullList.withSize(27, ItemStack.EMPTY)
-        container.copyInto(items)
+        container?.copyInto(items)
         val itemId = BuiltInRegistries.ITEM.getKey(stack.item).toString()
         val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: ""
-        if (debugVerbose) log("fingerprintFromItem: name=$stackName via CONTAINER")
+        if (debugVerbose) log("fingerprintFromItem: name=$stackName via ${if (container != null) "CONTAINER" else "EMPTY"}")
         return fingerprintItems(itemId, stackName, items)
     }
 
@@ -831,6 +949,15 @@ object WTFClient : ClientModInitializer {
         val y = parts[1].toIntOrNull() ?: return null
         val z = parts[2].toIntOrNull() ?: return null
         return BlockPos(x, y, z)
+    }
+
+    private fun parseVec3(coords: String): Triple<Double, Double, Double>? {
+        val parts = coords.split(",")
+        if (parts.size != 3) return null
+        val x = parts[0].toDoubleOrNull() ?: return null
+        val y = parts[1].toDoubleOrNull() ?: return null
+        val z = parts[2].toDoubleOrNull() ?: return null
+        return Triple(x, y, z)
     }
 
     private fun intToBytes(v: Int) = byteArrayOf(
@@ -881,9 +1008,7 @@ object WTFClient : ClientModInitializer {
         }
         val file = getConfigFile(id)
         if (!file.exists()) {
-            blockMoods.clear()
-            invMoods.clear()
-            transitMoods.clear()
+            trackedShulkers.clear()
             nextSerial = 1
             return
         }
@@ -891,32 +1016,40 @@ object WTFClient : ClientModInitializer {
             val json = file.readText()
             log("load: reading ${json.length} chars from ${file.name}")
             val save = gson.fromJson(json, ShulkerSave::class.java)
-            blockMoods.clear()
-            invMoods.clear()
-            transitMoods.clear()
-            blockMoods.putAll(save.block)
-            invMoods.putAll(save.inv)
-            transitMoods.putAll(save.transit)
+            trackedShulkers.clear()
+            trackedShulkers.putAll(save.tracked_shulkers)
             nextSerial = save.nextSerial
-            val totalCached = (save.block.values + save.inv.values + save.transit.values)
-                .count { it.cachedContents != null }
-            log("load: loaded block=${save.block.size} inv=${save.inv.size} transit=${save.transit.size}, cachedContents=$totalCached")
+            val totalCached = save.tracked_shulkers.values.count { it.cachedContents != null }
+            log("load: loaded tracked_shulkers=${save.tracked_shulkers.size}, cachedContents=$totalCached")
         } catch (e: Exception) { 
             log("load failed: $e")
         }
     }
 
     private fun getItemUUID(stack: ItemStack): String? {
-        val data = stack.get(DataComponents.CUSTOM_DATA)
-        val tag = data?.copyTag()
-        val uuid = tag?.getString("wtf:uuid")?.orElse("")?.takeIf { it.isNotEmpty() }
-        if (debugVerbose && uuid != null) log("getItemUUID: stack has $uuid")
-        return uuid
+        val data = stack.get(DataComponents.CUSTOM_DATA) ?: return null
+        if (data.isEmpty) return null
+        val tag = data.copyTag()
+        if (!tag.contains("wtf:uuid")) return null
+        val uuid = tag.getString("wtf:uuid")
+        return if (uuid is java.util.Optional<*>) {
+            (uuid as java.util.Optional<String>).orElse(null)
+        } else {
+            uuid.toString()
+        }?.takeIf { it.isNotEmpty() }
     }
 
     private fun getBlockEntityUUID(be: BaseContainerBlockEntity): String? {
-        return be.components().get(DataComponents.CUSTOM_DATA)?.copyTag()?.getString("wtf:uuid")?.orElse("")
-            ?.takeIf { it.isNotEmpty() }
+        val data = be.components().get(DataComponents.CUSTOM_DATA) ?: return null
+        if (data.isEmpty) return null
+        val tag = data.copyTag()
+        if (!tag.contains("wtf:uuid")) return null
+        val uuid = tag.getString("wtf:uuid")
+        return if (uuid is java.util.Optional<*>) {
+            (uuid as java.util.Optional<String>).orElse(null)
+        } else {
+            uuid.toString()
+        }?.takeIf { it.isNotEmpty() }
     }
 
     private fun ensureItemUUID(stack: ItemStack): String {
@@ -930,7 +1063,13 @@ object WTFClient : ClientModInitializer {
     private fun injectItemUUID(stack: ItemStack, uuid: String) {
         val current = stack.get(DataComponents.CUSTOM_DATA) ?: CustomData.EMPTY
         val tag = current.copyTag()
-        if (tag.getString("wtf:uuid").orElse("") == uuid) return
+        val existingOpt = tag.getString("wtf:uuid")
+        val existing = if (existingOpt is java.util.Optional<*>) {
+            (existingOpt as java.util.Optional<String>).orElse(null)
+        } else {
+            existingOpt.toString()
+        }
+        if (existing == uuid) return
         tag.putString("wtf:uuid", uuid)
         stack.set(DataComponents.CUSTOM_DATA, CustomData.of(tag))
     }
@@ -950,39 +1089,52 @@ object WTFClient : ClientModInitializer {
         log(msg)
     }
 
-    private fun serializeContainerToNbt(container: Container): ByteArray? {
-        val nonEmptyCount = (0 until minOf(container.containerSize, 27)).count { !container.getItem(it).isEmpty }
-        log("serializeContainerToNbt: containerSize=${container.containerSize}, nonEmptySlots=$nonEmptyCount")
+    private fun serializeShulkerContents(stack: ItemStack): ByteArray? {
+        if (stack.isEmpty || !isShulkerItem(stack)) return null
+        val container = stack.get(DataComponents.CONTAINER)
+        val items = NonNullList.withSize(27, ItemStack.EMPTY)
+        container?.copyInto(items)
+        return serializeItemListToNbt(items)
+    }
+
+    private fun serializeItemListToNbt(items: List<ItemStack>): ByteArray? {
         return try {
-            val items = mutableListOf<Map<String, Any?>>()
-            for (i in 0 until minOf(container.containerSize, 27)) {
-                val stack = container.getItem(i)
+            val itemMaps = mutableListOf<Map<String, Any?>>()
+            for (i in 0 until 27) {
+                val stack = items.getOrNull(i) ?: ItemStack.EMPTY
                 if (!stack.isEmpty) {
                     val itemMap = mutableMapOf<String, Any?>()
                     itemMap["id"] = BuiltInRegistries.ITEM.getKey(stack.item).toString()
                     itemMap["count"] = stack.count
-                    items.add(itemMap)
+                    itemMaps.add(itemMap)
                 } else {
-                    items.add(emptyMap())
+                    itemMaps.add(emptyMap())
                 }
             }
-            val result = gson.toJson(items).toByteArray(Charsets.UTF_8)
-            log("serializeContainerToNbt: success, ${result.size} bytes")
-            result
+            gson.toJson(itemMaps).toByteArray(Charsets.UTF_8)
         } catch (e: Exception) {
-            log("serializeContainerToNbt failed: $e")
+            log("serializeItemListToNbt failed: $e")
             null
         }
     }
 
+    private fun serializeContainerToNbt(container: Container): ByteArray? {
+        val items = NonNullList.withSize(27, ItemStack.EMPTY)
+        for (i in 0 until minOf(container.containerSize, 27)) {
+            items[i] = container.getItem(i)
+        }
+        return serializeItemListToNbt(items)
+    }
+
     fun deserializeNbtToItems(data: ByteArray?): List<ItemStack> {
         if (data == null) {
-            log("deserializeNbtToItems: data is null")
+            return List(27) { ItemStack.EMPTY }
+        }
+        if (data.isEmpty()) {
             return List(27) { ItemStack.EMPTY }
         }
         return try {
             val json = String(data, Charsets.UTF_8)
-            log("deserializeNbtToItems: parsing ${json.length} chars")
             val items: List<Map<String, Any>> = gson.fromJson(json, ArrayList::class.java) as List<Map<String, Any>>
             val result = MutableList(27) { ItemStack.EMPTY }
             for (i in items.indices) {
@@ -996,8 +1148,6 @@ object WTFClient : ClientModInitializer {
                     }
                 }
             }
-            val nonEmpty = result.count { !it.isEmpty }
-            log("deserializeNbtToItems: got $nonEmpty non-empty items")
             result
         } catch (e: Exception) {
             log("deserializeNbtToItems failed: $e")
@@ -1010,25 +1160,19 @@ object WTFClient : ClientModInitializer {
         val file = getConfigFile(id)
         file.parentFile.mkdirs()
 
-        val happyBlock = blockMoods.filterValues { it.happy }
-        val happyInv = invMoods.filterValues { it.happy }
-        val happyTransit = transitMoods.filterValues { it.happy }
+        val happyShulkers = trackedShulkers.filterValues { it.happy }
 
-        val totalCached = (happyBlock.values + happyInv.values + happyTransit.values)
-            .count { it.cachedContents != null }
-        val totalBytes = (happyBlock.values + happyInv.values + happyTransit.values)
-            .mapNotNull { it.cachedContents?.size ?: 0 }.sum()
+        val totalCached = happyShulkers.values.count { it.cachedContents != null }
+        val totalBytes = happyShulkers.values.mapNotNull { it.cachedContents?.size ?: 0 }.sum()
 
-        if (happyBlock.isEmpty() && happyInv.isEmpty() && happyTransit.isEmpty() && !file.exists()) return
+        if (happyShulkers.isEmpty() && !file.exists()) return
 
         val json = gson.toJson(ShulkerSave(
-            version = 12,
+            version = 13,
             nextSerial = nextSerial,
-            block = happyBlock,
-            inv = happyInv,
-            transit = happyTransit
+            tracked_shulkers = happyShulkers
         ))
-        log("save: block=${happyBlock.size} inv=${happyInv.size} transit=${happyTransit.size}, cachedContents=$totalCached (${totalBytes}B), json=${json.length} chars")
+        log("save: tracked_shulkers=${happyShulkers.size}, cachedContents=$totalCached (${totalBytes}B), json=${json.length} chars")
         file.writeText(json)
     }
 }

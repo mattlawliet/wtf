@@ -41,7 +41,7 @@ class ShulkerListRow(
         val textColor = when (section) {
             ShulkerSectionType.BLOCK -> 0xFFFFAA00.toInt()
             ShulkerSectionType.INVENTORY -> 0xFF55FF55.toInt()
-            ShulkerSectionType.TRANSIT -> 0xFFFFAA55.toInt()
+            ShulkerSectionType.ITEM -> 0xFFFFAA55.toInt()
         }
 
         graphics.renderItem(stack, x + iconPadding, y + (rowHeight - iconSize) / 2)
@@ -76,5 +76,5 @@ class ShulkerListRow(
 enum class ShulkerSectionType {
     BLOCK,
     INVENTORY,
-    TRANSIT
+    ITEM
 }

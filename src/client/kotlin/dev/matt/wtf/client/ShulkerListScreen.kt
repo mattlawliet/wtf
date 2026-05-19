@@ -40,14 +40,12 @@ class ShulkerListScreen(private val entries: List<ShulkerEntry>) : Screen(Compon
                 "inv" -> slotLabel(entry.location)
                 "block" -> {
                     val dim = entry.location.substringBeforeLast(':')
-                    val coords = entry.location.substringAfterLast(':').replace("_", ", ")
+                    val coords = entry.location.substringAfterLast(':')
                     "At $coords  [$dim]"
                 }
-                "transit" -> {
-                    if (entry.location.contains(':') && entry.location.substringAfterLast(':').contains('_')) {
-                        val dim = entry.location.substringBeforeLast(':')
-                        val coords = entry.location.substringAfterLast(':').replace("_", ", ")
-                        "§6Dropped near $coords§r"
+                "item" -> {
+                    if (entry.location.contains(',')) {
+                        "§6Dropped near ${entry.location}§r"
                     } else {
                         "§6In Transit (Missing)§r"
                     }
