@@ -217,7 +217,7 @@ object WTFClient : ClientModInitializer {
 
     data class ShulkerState(
         val uuid: String,
-        var state: String, // "block", "item", "inv"
+        var state: String, // "block", "item", "inv", "ex-inv"
         var entity_id: String = "",
         var dim: String = "",
         var coords: String = "", // "x,y,z"
@@ -229,12 +229,13 @@ object WTFClient : ClientModInitializer {
         var contentHash: String = "",
         var type: String = "minecraft:shulker_box",
         var cachedContents: ByteArray? = null,
-        var from: String = ""
+        var from: String = "",
+        var lastKnown: Boolean = false
     )
 
     data class ShulkerSave(
         val tracked_shulkers: Map<String, ShulkerState> = emptyMap(),
-        val version: Int = 13,
+        val version: Int = 14,
         val nextSerial: Int = 1
     )
 
@@ -1223,7 +1224,7 @@ object WTFClient : ClientModInitializer {
         if (happyShulkers.isEmpty() && !file.exists()) return
 
         val json = gson.toJson(ShulkerSave(
-            version = 13,
+            version = 14,
             nextSerial = nextSerial,
             tracked_shulkers = happyShulkers
         ))
