@@ -156,49 +156,79 @@ object WTFClient : ClientModInitializer {
         val pos = hr.blockPos
         val state = level.getBlockState(pos)
         val blockId = BuiltInRegistries.BLOCK.getKey(state.block).toString()
-        if (!blockId.contains("chest")) return
+        if (!blockId.contains("chest") && !blockId.contains("barrel") && !blockId.contains("shulker_box")) return
 
         openChestPos = pos
         openChestInvSnapshot = captureInventorySnapshot()
-        log("handleChestScreen: chest at ${blockLocation(pos, level)}, snapshot taken")
+        log("handleChestScreen: container at ${blockLocation(pos, level)}, snapshot taken")
     }
 
-    private fun handleChestClosed() {
+    private fun handleChestClosed(screen: Any) {
         val pos = openChestPos ?: return
-        val snapshot = openChestInvSnapshot ?: return
         openChestPos = null
         openChestInvSnapshot = null
 
         val mc = Minecraft.getInstance() ?: return
         val level = mc.level ?: return
-
-        val be = level.getBlockEntity(pos) as? BaseContainerBlockEntity ?: return
+        val player = mc.player ?: return
         val chestLoc = blockLocation(pos, level)
+        val coordStr = "${pos.x},${pos.y},${pos.z}"
+        val dimStr = level.dimension().identifier().toString()
 
-        for (i in 0 until be.containerSize) {
-            val stack = be.getItem(i)
+        val menu = (screen as? net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>)?.menu ?: return
+
+        // 1. Scan all slots in the container to find which shulkers are currently inside
+        val shulkersInChest = mutableSetOf<String>()
+        for (slot in menu.slots) {
+            // Check if this slot belongs to the chest/barrel rather than the player inventory
+            if (slot.container == player.inventory) continue
+            val stack = slot.item
             if (stack.isEmpty || !isShulkerItem(stack)) continue
 
+            // Ensure/retrieve UUID for the shulker
             val stackUUID = getItemUUID(stack) ?: continue
-            if (!snapshot.containsKey(stackUUID)) continue
+            shulkersInChest.add(stackUUID)
 
-            val existing = trackedShulkers[stackUUID] ?: continue
+            // Update tracking state for any tracked shulker in the chest
+            val entry = trackedShulkers[stackUUID]
+            if (entry != null) {
+                val cachedNbt = serializeShulkerContents(stack)
+                val oldState = entry.state
+                val oldCoords = entry.coords
 
-            val cachedNbt = serializeShulkerContents(stack)
-            trackedShulkers[stackUUID] = existing.copy(
-                state = "block",
-                entity_id = "",
-                dim = level.dimension().identifier().toString(),
-                coords = "${pos.x},${pos.y},${pos.z}",
-                last_update_time = System.currentTimeMillis().toString(),
-                from = "chest:inv→block",
-                cachedContents = cachedNbt
-            )
+                entry.state = "ex-inv"
+                entry.lastKnown = false
+                entry.entity_id = ""
+                entry.dim = dimStr
+                entry.coords = coordStr
+                entry.last_update_time = System.currentTimeMillis().toString()
+                entry.from = "chest:scan"
+                entry.cachedContents = cachedNbt
 
-            injectItemUUID(stack, stackUUID)
-            notify("§echest§f ← §ainv§f §7(${existing.name})§f")
-            log("handleChestClosed: tracked shulker in chest at $chestLoc, uuid=$stackUUID")
+                injectItemUUID(stack, stackUUID)
+
+                if (oldState != "ex-inv" || oldCoords != coordStr) {
+                    notify("§echest§f ← §ainv§f §7(${entry.name})§f")
+                    log("handleChestClosed: tracked shulker placed/found in chest at $chestLoc, uuid=$stackUUID")
+                }
+            }
         }
+
+        // 2. Self-Correction: Find shulkers previously marked in THIS chest that are now MISSING (hoppers/taken)
+        var corrected = false
+        for (entry in trackedShulkers.values) {
+            if (entry.state == "ex-inv" && entry.coords == coordStr && entry.dim == dimStr) {
+                // If it's not currently in the chest, it was removed (e.g. by hopper or other player)
+                if (entry.uuid !in shulkersInChest && !entry.lastKnown) {
+                    log("handleChestClosed self-correction: shulker ${entry.name} (uuid=${entry.uuid}) is no longer in chest at $chestLoc. Marking as lastKnown=true.")
+                    entry.lastKnown = true
+                    entry.last_update_time = System.currentTimeMillis().toString()
+                    entry.from = "chest:missing_on_close"
+                    corrected = true
+                }
+            }
+        }
+
         save()
     }
 
@@ -466,7 +496,7 @@ object WTFClient : ClientModInitializer {
             if (screen is AbstractContainerScreenAccessor) {
                 handleChestScreen(mc, screen)
                 ScreenEvents.remove(screen).register {
-                    handleChestClosed()
+                    handleChestClosed(screen)
                     val l = Minecraft.getInstance().level
                     val p = Minecraft.getInstance().player
                     if (l != null && p != null) {
