@@ -6,6 +6,7 @@ import net.minecraft.client.gui.components.EditBox
 import net.minecraft.client.gui.screens.Screen
 import net.minecraft.client.input.MouseButtonEvent
 import net.minecraft.network.chat.Component
+import net.minecraft.resources.Identifier
 import net.minecraft.world.item.ItemStack
 
 class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Component.literal("Happy Shulkers")) {
@@ -104,6 +105,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
 
         renderLeftPanel(graphics, mouseX, mouseY)
         renderPreviewPanel(graphics)
+        renderPreviewGridTooltip(graphics, mouseX, mouseY)
     }
 
     private fun renderLeftPanel(graphics: GuiGraphics, mouseX: Int, mouseY: Int) {
@@ -246,6 +248,44 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             else -> "items=$itemCount cached=${selected.cachedContentsNbt.size}B"
         }
         graphics.drawString(font, Component.literal(debugStatus), previewX, nameY + 24, 0xFFFFFF00.toInt(), false)
+    }
+
+    private fun renderPreviewGridTooltip(graphics: GuiGraphics, mouseX: Int, mouseY: Int) {
+        val selected = allEntries.find { it.id == selectedId } ?: return
+        val items = previewItemsById[selected.id]
+            ?: selected.items.takeIf { it.size == 27 }
+            ?: selected.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems)
+            ?: return
+
+        val panelY = searchHeight + 5
+        val previewX = leftPanelWidth + 7
+        val previewWidth = width - previewX - 7
+
+        val cellSize = 22
+        val cellPadding = 2
+        val gridStartX = previewX + (previewWidth - 9 * (cellSize + cellPadding)) / 2
+        val gridStartY = panelY + 10
+
+        val gridWidth = 9 * (cellSize + cellPadding)
+        val gridHeight = 3 * (cellSize + cellPadding)
+        if (mouseX < gridStartX || mouseX >= gridStartX + gridWidth ||
+            mouseY < gridStartY || mouseY >= gridStartY + gridHeight) return
+
+        val col = (mouseX - gridStartX) / (cellSize + cellPadding)
+        val row = (mouseY - gridStartY) / (cellSize + cellPadding)
+        if (col !in 0..8 || row !in 0..2) return
+
+        val slotIndex = row * 9 + col
+        val item = items.getOrNull(slotIndex) ?: return
+        if (item.isEmpty) return
+
+        val mc = Minecraft.getInstance()
+        val player = mc.player
+        val lines = if (player != null) Screen.getTooltipFromItem(mc, item) else listOf(item.hoverName)
+        val components = lines.map { net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipComponent.create(it.visualOrderText) }
+        graphics.renderTooltip(font, components, mouseX, mouseY,
+            net.minecraft.client.gui.screens.inventory.tooltip.DefaultTooltipPositioner.INSTANCE,
+            Identifier.fromNamespaceAndPath("wtf", "item_tooltip"))
     }
 
     override fun mouseClicked(mouseButtonEvent: MouseButtonEvent, bl: Boolean): Boolean {

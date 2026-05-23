@@ -149,48 +149,105 @@ object WTFClient : ClientModInitializer {
     private var openChestPos: BlockPos? = null
     private var openChestInvSnapshot: MutableMap<String, ItemStack>? = null
 
+    private fun getContainerBlockPos(menu: net.minecraft.world.inventory.AbstractContainerMenu, level: Level): Pair<BlockPos, String>? {
+        for (slot in menu.slots) {
+            val container = slot.container
+            if (container is BaseContainerBlockEntity) {
+                val bePos = container.blockPos
+                val blockId = BuiltInRegistries.BLOCK.getKey(level.getBlockState(bePos).block).toString()
+                if (blockId.contains("chest") || blockId.contains("barrel") || blockId.contains("shulker_box")) {
+                    return bePos to blockId
+                }
+            }
+        }
+        return null
+    }
+
     private fun handleChestScreen(mc: Minecraft, screen: Any) {
         val level = mc.level ?: return
-        val hr = mc.hitResult
-        if (hr !is net.minecraft.world.phys.BlockHitResult) return
-        val pos = hr.blockPos
-        val state = level.getBlockState(pos)
-        val blockId = BuiltInRegistries.BLOCK.getKey(state.block).toString()
-        if (!blockId.contains("chest") && !blockId.contains("barrel") && !blockId.contains("shulker_box")) return
 
-        openChestPos = pos
+        openChestPos = null
+        val menu = (screen as? net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>)?.menu
+        if (menu != null) {
+            val fromContainer = getContainerBlockPos(menu, level)
+            if (fromContainer != null) {
+                openChestPos = fromContainer.first
+                log("handleChestScreen: container at ${blockLocation(fromContainer.first, level)} (from BE)")
+            }
+        }
+
+        // Fallback: use hit result if container lookup didn't find anything
+        if (openChestPos == null) {
+            val hr = mc.hitResult
+            if (hr is net.minecraft.world.phys.BlockHitResult) {
+                val pos = hr.blockPos
+                val blockId = BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).block).toString()
+                if (blockId.contains("chest") || blockId.contains("barrel") || blockId.contains("shulker_box")) {
+                    openChestPos = pos
+                    log("handleChestScreen: container at ${blockLocation(pos, level)} (from hitResult)")
+                }
+            }
+        }
+
         openChestInvSnapshot = captureInventorySnapshot()
-        log("handleChestScreen: container at ${blockLocation(pos, level)}, snapshot taken")
     }
 
     private fun handleChestClosed(screen: Any) {
-        val pos = openChestPos ?: return
-        openChestPos = null
-        openChestInvSnapshot = null
-
         val mc = Minecraft.getInstance() ?: return
         val level = mc.level ?: return
         val player = mc.player ?: return
-        val chestLoc = blockLocation(pos, level)
-        val coordStr = "${pos.x},${pos.y},${pos.z}"
-        val dimStr = level.dimension().identifier().toString()
 
         val menu = (screen as? net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>)?.menu ?: return
+
+        // Derive block position from the container's block entity (reliable, not hitResult-dependent)
+        val containerInfo = getContainerBlockPos(menu, level)
+        val containerPos = containerInfo?.first ?: openChestPos ?: return
+
+        openChestPos = null
+        openChestInvSnapshot = null
+
+        val chestLoc = blockLocation(containerPos, level)
+        val coordStr = "${containerPos.x},${containerPos.y},${containerPos.z}"
+        val dimStr = level.dimension().identifier().toString()
 
         // 1. Scan all slots in the container to find which shulkers are currently inside
         val shulkersInChest = mutableSetOf<String>()
         for (slot in menu.slots) {
-            // Check if this slot belongs to the chest/barrel rather than the player inventory
             if (slot.container == player.inventory) continue
             val stack = slot.item
             if (stack.isEmpty || !isShulkerItem(stack)) continue
 
-            // Ensure/retrieve UUID for the shulker
-            val stackUUID = getItemUUID(stack) ?: continue
-            shulkersInChest.add(stackUUID)
+            val stackUUID = getItemUUID(stack)
+            val uuid = if (stackUUID != null) {
+                stackUUID
+            } else {
+                // Assign UUID to untracked shulker found in chest
+                val newUuid = ensureItemUUID(stack)
+                // Create a tracking entry if not already tracked (discovered in chest)
+                if (newUuid !in trackedShulkers) {
+                    val hash = fingerprintFromItem(stack) ?: ""
+                    val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
+                    val stackType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+                    trackedShulkers[newUuid] = ShulkerState(
+                        uuid = newUuid,
+                        state = "ex-inv",
+                        dim = dimStr,
+                        coords = coordStr,
+                        last_update_time = System.currentTimeMillis().toString(),
+                        name = stackName,
+                        happy = false,
+                        contentHash = hash,
+                        from = "chest:new_discovery",
+                        type = stackType,
+                        cachedContents = serializeShulkerContents(stack)
+                    )
+                    log("handleChestClosed: new untracked shulker discovered in chest at $chestLoc, uuid=$newUuid name=$stackName")
+                }
+                newUuid
+            }
+            shulkersInChest.add(uuid)
 
-            // Update tracking state for any tracked shulker in the chest
-            val entry = trackedShulkers[stackUUID]
+            val entry = trackedShulkers[uuid]
             if (entry != null) {
                 val cachedNbt = serializeShulkerContents(stack)
                 val oldState = entry.state
@@ -205,20 +262,17 @@ object WTFClient : ClientModInitializer {
                 entry.from = "chest:scan"
                 entry.cachedContents = cachedNbt
 
-                injectItemUUID(stack, stackUUID)
-
                 if (oldState != "ex-inv" || oldCoords != coordStr) {
-                    notify("§echest§f ← §ainv§f §7(${entry.name})§f")
-                    log("handleChestClosed: tracked shulker placed/found in chest at $chestLoc, uuid=$stackUUID")
+                    notify("§echest§f ← §a${oldState}§f §7(${entry.name})§f")
+                    log("handleChestClosed: tracked shulker placed/found in chest at $chestLoc, uuid=$uuid")
                 }
             }
         }
 
-        // 2. Self-Correction: Find shulkers previously marked in THIS chest that are now MISSING (hoppers/taken)
+        // 2. Self-Correction: Find shulkers previously marked in THIS chest that are now MISSING
         var corrected = false
         for (entry in trackedShulkers.values) {
             if (entry.state == "ex-inv" && entry.coords == coordStr && entry.dim == dimStr) {
-                // If it's not currently in the chest, it was removed (e.g. by hopper or other player)
                 if (entry.uuid !in shulkersInChest && !entry.lastKnown) {
                     log("handleChestClosed self-correction: shulker ${entry.name} (uuid=${entry.uuid}) is no longer in chest at $chestLoc. Marking as lastKnown=true.")
                     entry.lastKnown = true
