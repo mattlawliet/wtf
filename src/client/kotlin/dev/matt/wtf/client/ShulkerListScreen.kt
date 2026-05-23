@@ -50,6 +50,9 @@ class ShulkerListScreen(private val entries: List<ShulkerEntry>) : Screen(Compon
                         "§6In Transit (Missing)§r"
                     }
                 }
+                "ex-inv" -> {
+                    if (entry.lastKnown) entry.location else "In chest: ${entry.location}"
+                }
                 else -> "Unknown"
             }
             graphics.drawString(font, Component.literal("#${entry.shortHash}:${entry.serial}  $detail"), width / 2 - 78, y + 14, 0xFF808080.toInt(), false)

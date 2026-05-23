@@ -10,25 +10,16 @@ class ShulkerListRow(
     val name: Component,
     val stack: ItemStack,
     val section: ShulkerSectionType,
-    val matchPercent: Float = 0f
+    val matchPercent: Float = 0f,
+    val lastKnown: Boolean = false,
+    val location: String = ""
 ) {
     companion object {
-        const val BASE_ICON_SIZE = 10
-        const val BASE_ICON_PADDING = 3
         const val BASE_ROW_HEIGHT = 17
+        const val SLOT_SIZE = 16
     }
 
-    fun getRowHeight(scale: Float) = (BASE_ROW_HEIGHT * scale).toInt()
-    fun getIconSize(scale: Float) = (BASE_ICON_SIZE * scale).toInt()
-    fun getIconPadding(scale: Float) = (BASE_ICON_PADDING * scale).toInt()
-
-    fun render(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int, isHovered: Boolean, isSelected: Boolean, scale: Float = 1f) {
-        val rowHeight = getRowHeight(scale)
-        val iconSize = getIconSize(scale)
-        val iconPadding = getIconPadding(scale)
-        val slotSize = 16
-        val textLeftPad = slotSize + iconPadding * 2
-
+    fun render(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int, isHovered: Boolean, isSelected: Boolean) {
         val bgColor = when {
             isSelected -> 0xFF4A4A4A.toInt()
             isHovered -> 0xFF3A3A3A.toInt()
@@ -36,37 +27,29 @@ class ShulkerListRow(
         }
 
         if (bgColor != 0) {
-            graphics.fill(x, y, x + width, y + rowHeight, bgColor)
+            graphics.fill(x, y, x + width, y + BASE_ROW_HEIGHT, bgColor)
         }
 
         val textColor = when (section) {
             ShulkerSectionType.BLOCK -> 0xFFFFAA00.toInt()
             ShulkerSectionType.INVENTORY -> 0xFF55FF55.toInt()
             ShulkerSectionType.ITEM -> 0xFFFFAA55.toInt()
+            ShulkerSectionType.EXTERNAL_INV -> 0xFF55FFFF.toInt()
         }
 
-        val iconScale = (iconSize.toFloat() / slotSize).coerceAtMost(1f)
-        val scaledDrawSize = slotSize * iconScale
-        val iconX = x + iconPadding + ((slotSize - scaledDrawSize) / 2f).toInt()
-        val iconY = y + ((rowHeight - scaledDrawSize) / 2f).toInt()
-
-        graphics.pose().pushMatrix()
-        graphics.pose().translate(iconX.toFloat(), iconY.toFloat())
-        graphics.pose().scale(iconScale, iconScale)
-        graphics.renderItem(stack, 0, 0)
-        graphics.pose().popMatrix()
+        graphics.renderItem(stack, x + 2, y + (BASE_ROW_HEIGHT - SLOT_SIZE) / 2)
 
         val displayName = name.string
-        val truncatedName = if (displayName.length > 30) displayName.take(27) + "..." else displayName
+        val prefix = if (lastKnown) "§c[LK]§r " else ""
+        val textLeftPad = SLOT_SIZE + 4
+        val rightPad = 4 + (if (matchPercent > 0f) font.width("${(matchPercent * 100).toInt()}%") + 4 else 0)
+        val maxTextWidth = width - textLeftPad - rightPad
+        val fullName = "$prefix$displayName"
+        val truncatedName = if (font.width(fullName) > maxTextWidth)
+            font.plainSubstrByWidth(fullName, maxTextWidth)
+        else fullName
 
-        graphics.drawString(
-            font,
-            Component.literal(truncatedName),
-            x + textLeftPad,
-            y + (rowHeight - 8) / 2,
-            textColor,
-            false
-        )
+        graphics.drawString(font, truncatedName, x + textLeftPad, y + (BASE_ROW_HEIGHT - 8) / 2, textColor, false)
 
         if (matchPercent > 0f) {
             val percentText = "${(matchPercent * 100).toInt()}%"
@@ -74,8 +57,8 @@ class ShulkerListRow(
             graphics.drawString(
                 font,
                 Component.literal(percentText),
-                x + width - percentWidth - (4 * scale).toInt(),
-                y + (rowHeight - 8) / 2,
+                x + width - percentWidth - 4,
+                y + (BASE_ROW_HEIGHT - 8) / 2,
                 0xFF55FF55.toInt(),
                 false
             )
@@ -86,5 +69,6 @@ class ShulkerListRow(
 enum class ShulkerSectionType {
     BLOCK,
     INVENTORY,
-    ITEM
+    ITEM,
+    EXTERNAL_INV
 }

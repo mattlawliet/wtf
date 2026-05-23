@@ -13,7 +13,8 @@ data class ShulkerEntry(
     val serial: Int,
     val items: List<ItemStack> = emptyList(),
     val cachedContentsNbt: ByteArray? = null,
-    val matchPercent: Float = 0f
+    val matchPercent: Float = 0f,
+    val lastKnown: Boolean = false
 )
 
 fun fuzzyMatch(query: String, text: String): Boolean {

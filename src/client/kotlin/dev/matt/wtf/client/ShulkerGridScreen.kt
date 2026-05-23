@@ -16,22 +16,13 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
     private var hoveredId: String? = null
     private var searchQuery = ""
 
-    private val basePanelWidth = 140
-    private val baseSearchHeight = 21
-    private val baseHeaderHeight = 14
-    private val baseRowHeight = 17
+    private val leftPanelWidth: Int
+        get() = (width * 0.22f).toInt().coerceIn(130, 220)
 
-    private val leftPanelWidth get() = (basePanelWidth * guiScale).toInt()
-    private val searchHeight get() = (baseSearchHeight * guiScale).toInt()
-    private val sectionHeaderHeight get() = (baseHeaderHeight * guiScale).toInt()
-    private val rowHeight get() = (baseRowHeight * guiScale).toInt()
-    private val guiScale: Float
-        get() = Minecraft.getInstance().window.guiScale.toFloat().coerceAtLeast(1f)
-
+    private val searchHeight = 20
 
     override fun init() {
-        val field = EditBox(font, (10 * guiScale).toInt(), (5 * guiScale).toInt(),
-            (width - 20 * guiScale).toInt(), searchHeight,
+        val field = EditBox(font, 10, 5, width - 20, searchHeight,
             Component.literal("Search shulkers..."))
         field.setResponder { text ->
             searchQuery = text
@@ -52,12 +43,14 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         val blockEntries = mutableListOf<ShulkerListRow>()
         val invEntries = mutableListOf<ShulkerListRow>()
         val itemEntries = mutableListOf<ShulkerListRow>()
+        val exInvEntries = mutableListOf<ShulkerListRow>()
 
         for (entry in allEntries) {
             val sectionType = when (entry.section) {
                 "block" -> ShulkerSectionType.BLOCK
                 "inv" -> ShulkerSectionType.INVENTORY
                 "item" -> ShulkerSectionType.ITEM
+                "ex-inv" -> ShulkerSectionType.EXTERNAL_INV
                 else -> continue
             }
 
@@ -65,6 +58,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
                 ShulkerSectionType.BLOCK -> blockEntries
                 ShulkerSectionType.INVENTORY -> invEntries
                 ShulkerSectionType.ITEM -> itemEntries
+                ShulkerSectionType.EXTERNAL_INV -> exInvEntries
             }
 
             val items = entry.items.takeIf { it.size == 27 }
@@ -78,7 +72,9 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
                     name = entry.name,
                     stack = entry.stack,
                     section = sectionType,
-                    matchPercent = matchPercent
+                    matchPercent = matchPercent,
+                    lastKnown = entry.lastKnown,
+                    location = entry.location
                 ))
             }
         }
@@ -91,6 +87,9 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         }
         if (itemEntries.isNotEmpty()) {
             sections[ShulkerSectionType.ITEM] = ShulkerSection(ShulkerSectionType.ITEM, itemEntries)
+        }
+        if (exInvEntries.isNotEmpty()) {
+            sections[ShulkerSectionType.EXTERNAL_INV] = ShulkerSection(ShulkerSectionType.EXTERNAL_INV, exInvEntries)
         }
 
         if (selectedId == null && sections.values.any { it.entries.isNotEmpty() }) {
@@ -108,8 +107,8 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
     }
 
     private fun renderLeftPanel(graphics: GuiGraphics, mouseX: Int, mouseY: Int) {
-        val panelY = searchHeight + (5 * guiScale).toInt()
-        val panelHeight = height - panelY - (5 * guiScale).toInt()
+        val panelY = searchHeight + 5
+        val panelHeight = height - panelY - 5
         
         graphics.fill(0, panelY, leftPanelWidth, panelY + panelHeight, 0xFF1A1A1A.toInt())
 
@@ -118,14 +117,14 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         for (type in ShulkerSectionType.entries) {
             val section = sections[type] ?: continue
 
-            section.renderHeader(graphics, font, 0, currentY, leftPanelWidth, guiScale)
-            currentY += sectionHeaderHeight
+            section.renderHeader(graphics, font, 0, currentY, leftPanelWidth)
+            currentY += ShulkerSection.HEADER_HEIGHT
 
             if (!section.isCollapsed) {
-                val availableHeight = height - currentY - (5 * guiScale).toInt()
+                val availableHeight = height - currentY - 5
                 if (availableHeight > 0) {
-                    section.renderEntries(graphics, font, 0, currentY, leftPanelWidth, availableHeight, hoveredId, selectedId, guiScale)
-                    currentY += minOf(section.getTotalContentHeight(guiScale), availableHeight)
+                    section.renderEntries(graphics, font, 0, currentY, leftPanelWidth, availableHeight, hoveredId, selectedId)
+                    currentY += minOf(section.getTotalContentHeight(), availableHeight)
                 }
             }
 
@@ -138,18 +137,16 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         for (type in ShulkerSectionType.entries) {
             val section = sections[type] ?: continue
 
-            // Check if hovering over header
-            if (mouseX in 0..leftPanelWidth && mouseY >= hoverY && mouseY < hoverY + sectionHeaderHeight) {
+            if (mouseX in 0..leftPanelWidth && mouseY >= hoverY && mouseY < hoverY + ShulkerSection.HEADER_HEIGHT) {
                 break
             }
-            hoverY += sectionHeaderHeight
+            hoverY += ShulkerSection.HEADER_HEIGHT
 
-            // Check if hovering over entries
             if (!section.isCollapsed) {
-                val contentHeight = section.getTotalContentHeight(guiScale)
+                val contentHeight = section.getTotalContentHeight()
                 if (mouseX in 0..leftPanelWidth && mouseY >= hoverY && mouseY < hoverY + contentHeight) {
                     val localY = mouseY - hoverY
-                    val entry = section.getEntryAtPosition(localY, guiScale)
+                    val entry = section.getEntryAtPosition(localY)
                     if (entry != null) {
                         hoveredId = entry.id
                     }
@@ -163,14 +160,13 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
     }
 
     private fun renderPreviewPanel(graphics: GuiGraphics) {
-        val panelY = searchHeight + (5 * guiScale).toInt()
-        val panelHeight = height - panelY - (5 * guiScale).toInt()
+        val panelY = searchHeight + 5
+        val panelHeight = height - panelY - 5
         
-        val previewX = leftPanelWidth + (7 * guiScale).toInt()
-        val previewWidth = width - previewX - (7 * guiScale).toInt()
+        val previewX = leftPanelWidth + 7
+        val previewWidth = width - previewX - 7
 
-        graphics.fill(previewX - (3 * guiScale).toInt(), panelY,
-            width - (3 * guiScale).toInt(), panelY + panelHeight, 0xFF2A2A2A.toInt())
+        graphics.fill(previewX - 3, panelY, width - 3, panelY + panelHeight, 0xFF2A2A2A.toInt())
 
         val selected = allEntries.find { it.id == selectedId }
         if (selected == null) {
@@ -184,10 +180,10 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             ?: selected.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems)
             ?: List(27) { ItemStack.EMPTY }
 
-        val cellSize = (22 * guiScale).toInt()
-        val cellPadding = (2 * guiScale).toInt()
+        val cellSize = 22
+        val cellPadding = 2
         val gridStartX = previewX + (previewWidth - 9 * (cellSize + cellPadding)) / 2
-        val gridStartY = panelY + (10 * guiScale).toInt()
+        val gridStartY = panelY + 10
 
         for (i in 0 until 27) {
             val col = i % 9
@@ -205,11 +201,12 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             }
         }
 
-        val nameY = gridStartY + 3 * (cellSize + cellPadding) + (10 * guiScale).toInt()
+        val nameY = gridStartY + 3 * (cellSize + cellPadding) + 10
         val nameColor = when (selected.section) {
             "block" -> 0xFFFFAA00.toInt()
             "inv" -> 0xFF55FF55.toInt()
             "item" -> 0xFFFFAA55.toInt()
+            "ex-inv" -> 0xFF55FFFF.toInt()
             else -> 0xFFFFFFFF.toInt()
         }
         graphics.drawString(font, selected.name, previewX, nameY, nameColor, false)
@@ -225,9 +222,22 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             }
             "inv" -> slotLabel(selected.location)
             "item" -> "In Transit: ${selected.location}"
+            "ex-inv" -> {
+                val rawLoc = selected.location
+                if (selected.lastKnown) {
+                    rawLoc // Already has §c[Last Known]§7 prefix from resolveHappyShulkers
+                } else {
+                    val loc = rawLoc
+                    if (loc.contains(':')) {
+                        val dim = loc.substringBeforeLast(':')
+                        val coords = loc.substringAfterLast(':')
+                        "$dim at $coords"
+                    } else loc
+                }
+            }
             else -> ""
         }
-        graphics.drawString(font, Component.literal(detailText), previewX, nameY + (12 * guiScale).toInt(), 0xFF808080.toInt(), false)
+        graphics.drawString(font, Component.literal(detailText), previewX, nameY + 12, 0xFF808080.toInt(), false)
 
         val itemCount = items.count { !it.isEmpty }
         val debugStatus = when {
@@ -235,7 +245,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             selected.cachedContentsNbt.isEmpty() -> "items=$itemCount cached=EMPTY"
             else -> "items=$itemCount cached=${selected.cachedContentsNbt.size}B"
         }
-        graphics.drawString(font, Component.literal(debugStatus), previewX, nameY + (24 * guiScale).toInt(), 0xFFFFFF00.toInt(), false)
+        graphics.drawString(font, Component.literal(debugStatus), previewX, nameY + 24, 0xFFFFFF00.toInt(), false)
     }
 
     override fun mouseClicked(mouseButtonEvent: MouseButtonEvent, bl: Boolean): Boolean {
@@ -244,23 +254,23 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         val button = mouseButtonEvent.button()
         
         if (button == 0 && mouseX < leftPanelWidth) {
-            val panelY = searchHeight + (5 * guiScale).toInt()
+            val panelY = searchHeight + 5
             var currentY = panelY
 
             for (type in ShulkerSectionType.entries) {
                 val section = sections[type] ?: continue
 
-                if (mouseY >= currentY && mouseY < currentY + sectionHeaderHeight) {
+                if (mouseY >= currentY && mouseY < currentY + ShulkerSection.HEADER_HEIGHT) {
                     section.toggleCollapse()
                     return true
                 }
-                currentY += sectionHeaderHeight
+                currentY += ShulkerSection.HEADER_HEIGHT
 
                 if (!section.isCollapsed) {
-                    val contentHeight = section.getTotalContentHeight(guiScale)
+                    val contentHeight = section.getTotalContentHeight()
                     if (mouseY >= currentY && mouseY < currentY + contentHeight) {
                         val localY = (mouseY - currentY).toInt()
-                        val entry = section.getEntryAtPosition(localY, guiScale)
+                        val entry = section.getEntryAtPosition(localY)
                         if (entry != null) {
                             selectedId = entry.id
                             return true
@@ -277,11 +287,11 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
 
     override fun mouseScrolled(mouseX: Double, mouseY: Double, horizontalAmount: Double, verticalAmount: Double): Boolean {
         if (mouseX < leftPanelWidth) {
-            var currentY = sectionHeaderHeight
+            var currentY = ShulkerSection.HEADER_HEIGHT
 
             for (type in ShulkerSectionType.entries) {
                 val section = sections[type] ?: continue
-                val sectionEnd = currentY + section.getTotalContentHeight(guiScale)
+                val sectionEnd = currentY + section.getTotalContentHeight()
                 if (mouseY >= currentY && mouseY < sectionEnd) {
                     section.scroll((-verticalAmount).toInt())
                     return true

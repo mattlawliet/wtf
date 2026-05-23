@@ -340,6 +340,46 @@ object WTFClient : ClientModInitializer {
                 }
             }
 
+            // 3. Periodically verify blocks in loaded chunks to avoid stale position data
+            if (tickCounter % 40 == 0) {
+                var changed = false
+                val currentDim = level.dimension().identifier().toString()
+                for (shulker in trackedShulkers.values) {
+                    val isPlacedBlock = shulker.state == "block"
+                    val isExInvVerified = shulker.state == "ex-inv" && !shulker.lastKnown
+                    
+                    if ((isPlacedBlock || isExInvVerified) && shulker.dim == currentDim && shulker.coords.isNotEmpty()) {
+                        val coords = parseVec3(shulker.coords)
+                        if (coords != null) {
+                            val pos = BlockPos(coords.first.toInt(), coords.second.toInt(), coords.third.toInt())
+                            if (level.hasChunkAt(pos)) {
+                                val blockState = level.getBlockState(pos)
+                                val blockId = BuiltInRegistries.BLOCK.getKey(blockState.block).toString()
+                                val stillExists = when {
+                                    shulker.state == "ex-inv" -> {
+                                        blockId.contains("chest") || blockId.contains("barrel") || blockId.contains("shulker_box")
+                                    }
+                                    else -> {
+                                        blockId.contains("shulker_box")
+                                    }
+                                }
+                                if (!stillExists) {
+                                    log("tick verify: block at ${shulker.coords} is now $blockId (was expected to hold shulker ${shulker.name}). Marking as lastKnown=true.")
+                                    shulker.state = "ex-inv"
+                                    shulker.lastKnown = true
+                                    shulker.last_update_time = System.currentTimeMillis().toString()
+                                    shulker.from = "tick:stale_clear"
+                                    changed = true
+                                }
+                            }
+                        }
+                    }
+                }
+                if (changed) {
+                    save()
+                }
+            }
+
             val currentSlot = player.inventory.selectedSlot
             val currentStack = player.inventoryMenu.getSlot(currentSlot).item
             val currentUUID = getItemUUID(currentStack)
@@ -937,16 +977,26 @@ object WTFClient : ClientModInitializer {
             val stack = if (item != null) ItemStack(item) else ItemStack(net.minecraft.world.level.block.Blocks.SHULKER_BOX)
             val items = entry.cachedContents?.let { deserializeNbtToItems(it) } ?: List(27) { ItemStack.EMPTY }
             
+            val location = when (entry.state) {
+                "block" -> "${entry.dim}:${entry.coords}"
+                "ex-inv" -> {
+                    val baseLoc = "${entry.dim}:${entry.coords}"
+                    if (entry.lastKnown) "§c[Last Known]§7 $baseLoc" else baseLoc
+                }
+                else -> entry.coords
+            }
+            
             val shulkerEntry = ShulkerEntry(
                 id = entry.uuid,
                 name = Component.literal(entry.name),
                 stack = stack,
                 section = entry.state,
-                location = if (entry.state == "block") "${entry.dim}:${entry.coords}" else entry.coords,
+                location = location,
                 shortHash = entry.uuid.take(6),
                 serial = 0,
                 items = items,
-                cachedContentsNbt = entry.cachedContents
+                cachedContentsNbt = entry.cachedContents,
+                lastKnown = entry.lastKnown
             )
             entries.add(shulkerEntry)
         }
