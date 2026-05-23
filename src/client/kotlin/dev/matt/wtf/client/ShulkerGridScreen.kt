@@ -11,6 +11,7 @@ import net.minecraft.world.item.ItemStack
 class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Component.literal("Happy Shulkers")) {
     private var searchField: EditBox? = null
     private val sections = mutableMapOf<ShulkerSectionType, ShulkerSection>()
+    private val previewItemsById = mutableMapOf<String, List<ItemStack>>()
     private var selectedId: String? = null
     private var hoveredId: String? = null
     private var searchQuery = ""
@@ -25,16 +26,8 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
     private val sectionHeaderHeight get() = (baseHeaderHeight * guiScale).toInt()
     private val rowHeight get() = (baseRowHeight * guiScale).toInt()
     private val guiScale: Float
-        get() {
-            val mc = Minecraft.getInstance()
-            val options = mc.options
-            return try {
-                val method = options.javaClass.getMethod("getGuiScale")
-                (method.invoke(options) as? Int)?.toFloat()?.coerceAtLeast(1f) ?: 1f
-            } catch (e: Exception) {
-                1f
-            }
-        }
+        get() = Minecraft.getInstance().window.guiScale.toFloat().coerceAtLeast(1f)
+
 
     override fun init() {
         val field = EditBox(font, (10 * guiScale).toInt(), (5 * guiScale).toInt(),
@@ -54,6 +47,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
 
     private fun rebuildSections(query: String) {
         sections.clear()
+        previewItemsById.clear()
 
         val blockEntries = mutableListOf<ShulkerListRow>()
         val invEntries = mutableListOf<ShulkerListRow>()
@@ -73,9 +67,10 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
                 ShulkerSectionType.ITEM -> itemEntries
             }
 
-            val items = entry.items.ifEmpty {
-                entry.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems) ?: emptyList()
-            }
+            val items = entry.items.takeIf { it.size == 27 }
+                ?: entry.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems)
+                ?: List(27) { ItemStack.EMPTY }
+            previewItemsById[entry.id] = items
             val matchPercent = if (query.isEmpty()) 1f else fuzzyMatchPercent(query, entry.name.string, items)
             if (matchPercent > 0f || query.isEmpty()) {
                 rows.add(ShulkerListRow(
@@ -184,9 +179,10 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             return
         }
 
-        var items = selected.items.ifEmpty {
-            selected.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems) ?: emptyList()
-        }
+        val items = previewItemsById[selected.id]
+            ?: selected.items.takeIf { it.size == 27 }
+            ?: selected.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems)
+            ?: List(27) { ItemStack.EMPTY }
 
         val cellSize = (22 * guiScale).toInt()
         val cellPadding = (2 * guiScale).toInt()
@@ -205,6 +201,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             if (item != null && !item.isEmpty) {
                 val itemOffset = ((cellSize - 16) / 2).coerceAtLeast(0)
                 graphics.renderItem(item, x + itemOffset, y + itemOffset)
+                graphics.renderItemDecorations(font, item, x + itemOffset, y + itemOffset)
             }
         }
 

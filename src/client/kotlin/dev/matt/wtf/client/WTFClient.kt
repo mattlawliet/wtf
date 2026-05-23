@@ -474,9 +474,20 @@ object WTFClient : ClientModInitializer {
             performInventoryScan(level, player)
             if (screen is ShulkerBoxScreen) {
                 handleShulkerScreen(mc, level, player, screen)
+                ScreenEvents.remove(screen).register {
+                    handleShulkerScreenClosed(screen)
+                }
             }
             if (screen is AbstractContainerScreenAccessor) {
                 handleChestScreen(mc, screen)
+                ScreenEvents.remove(screen).register {
+                    handleChestClosed()
+                    val l = Minecraft.getInstance().level
+                    val p = Minecraft.getInstance().player
+                    if (l != null && p != null) {
+                        performInventoryScan(l, p)
+                    }
+                }
             }
         }
     }
@@ -541,9 +552,13 @@ object WTFClient : ClientModInitializer {
         val isHappy = currentEntry?.happy ?: false
 
         if (currentKey != null) {
-            val cachedNbt = serializeContainerToNbt(container)
-            log("handleShulkerScreen: currentKey=$currentKey cachedNbt=${cachedNbt?.size ?: "NULL"}")
             val entry = trackedShulkers[currentKey]!!
+            val cachedNbt = chooseRicherCache(
+                serializeContainerToNbt(container),
+                be?.let { serializeContainerToNbt(it) },
+                entry.cachedContents
+            )
+            log("handleShulkerScreen: currentKey=$currentKey cachedNbt=${cachedNbt?.size ?: "NULL"}")
             entry.name = displayName
             entry.contentHash = contentHash
             entry.type = shulkerType
@@ -577,11 +592,22 @@ object WTFClient : ClientModInitializer {
                     happy = newHappy,
                     contentHash = contentHash,
                     from = "new-entry",
-                    type = shulkerType
+                    type = shulkerType,
+                    cachedContents = chooseRicherCache(
+                        serializeContainerToNbt(container),
+                        be?.let { serializeContainerToNbt(it) }
+                    )
                 )
             } else {
                 entry.happy = newHappy
                 entry.name = displayName
+                entry.contentHash = contentHash
+                entry.type = shulkerType
+                entry.cachedContents = chooseRicherCache(
+                    serializeContainerToNbt(container),
+                    be?.let { serializeContainerToNbt(it) },
+                    entry.cachedContents
+                )
                 entry.last_update_time = System.currentTimeMillis().toString()
                 entry.from = "toggle"
             }
@@ -596,6 +622,38 @@ object WTFClient : ClientModInitializer {
             .size(12, 12)
             .build()
         Screens.getButtons(screen).add(button)
+    }
+
+    private fun handleShulkerScreenClosed(screen: ShulkerBoxScreen) {
+        val mc = Minecraft.getInstance()
+        val level = mc.level ?: return
+        val player = mc.player ?: return
+        val pos = getValidShulkerPos(mc, level) ?: return
+        val be = level.getBlockEntity(pos) as? BaseContainerBlockEntity
+        val shulkerType = BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).block).toString()
+        val container = (screen.menu as ShulkerBoxMenuAccessor).container
+        
+        val coordStr = "${pos.x},${pos.y},${pos.z}"
+        val dimStr = level.dimension().identifier().toString()
+        
+        val beUUID = be?.let { getBlockEntityUUID(it) }
+        val currentKey = beUUID ?: trackedShulkers.values.firstOrNull { it.state == "block" && it.coords == coordStr && it.dim == dimStr }?.uuid
+        
+        if (currentKey != null) {
+            val entry = trackedShulkers[currentKey]
+            if (entry != null) {
+                val newNbt = serializeContainerToNbt(container)
+                val newHash = fingerprintContainer(container, shulkerType, be?.components()?.get(DataComponents.CUSTOM_NAME))
+                entry.cachedContents = newNbt
+                entry.contentHash = newHash
+                entry.last_update_time = System.currentTimeMillis().toString()
+                entry.from = "hss:close"
+                log("handleShulkerScreenClosed: updated cachedContents and contentHash for happy=${entry.happy} uuid=$currentKey")
+                save()
+            }
+        }
+        
+        performInventoryScan(level, player)
     }
 
     private fun performInventoryScan(level: Level, player: Player) {
@@ -813,6 +871,7 @@ object WTFClient : ClientModInitializer {
             val bType = BuiltInRegistries.BLOCK.getKey(player.level().getBlockState(pos).block).toString()
             fingerprintContainer(be, bType, be.components().get(DataComponents.CUSTOM_NAME))
         } else hash
+        val cachedNbt = if (be != null) serializeContainerToNbt(be) else serializeShulkerContents(stack)
         
         val displayName = if (stack.has(DataComponents.CUSTOM_NAME)) stack.get(DataComponents.CUSTOM_NAME)?.string ?: "???" else entry?.name ?: "Shulker Box"
         
@@ -827,7 +886,8 @@ object WTFClient : ClientModInitializer {
                 happy = false,
                 contentHash = blockHash,
                 from = "place:new",
-                type = type
+                type = type,
+                cachedContents = cachedNbt
             )
         } else {
             entry.state = "block"
@@ -836,6 +896,8 @@ object WTFClient : ClientModInitializer {
             entry.coords = coordStr
             entry.last_update_time = System.currentTimeMillis().toString()
             entry.contentHash = blockHash
+            entry.type = type
+            entry.cachedContents = cachedNbt
             entry.from = "place"
             if (entry.happy) notify("§aplaced§f → §eblock§f §7(${entry.name})§f")
         }
@@ -958,6 +1020,15 @@ object WTFClient : ClientModInitializer {
         val y = parts[1].toDoubleOrNull() ?: return null
         val z = parts[2].toDoubleOrNull() ?: return null
         return Triple(x, y, z)
+    }
+
+    private fun chooseRicherCache(vararg candidates: ByteArray?): ByteArray? {
+        return candidates
+            .filterNotNull()
+            .maxWithOrNull(
+                compareBy<ByteArray> { deserializeNbtToItems(it).count { stack -> !stack.isEmpty } }
+                    .thenBy { it.size }
+            )
     }
 
     private fun intToBytes(v: Int) = byteArrayOf(
