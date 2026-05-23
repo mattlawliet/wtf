@@ -145,22 +145,6 @@ object WTFClient : ClientModInitializer {
     private var throttleTicks: Int = 0
     private val THROTTLE_WINDOW = 5
 
-    private const val TRACK_PREFIX = "?:"
-
-    private fun isMarkedForTracking(stack: ItemStack): Boolean {
-        val name = stack.get(DataComponents.CUSTOM_NAME)?.string
-        return name?.startsWith(TRACK_PREFIX, ignoreCase = true) == true
-    }
-
-    private fun getDisplayNameFromStack(stack: ItemStack): String {
-        val name = stack.get(DataComponents.CUSTOM_NAME)?.string
-        val hasPrefix = name?.startsWith(TRACK_PREFIX, ignoreCase = true) == true
-        return if (hasPrefix && name!!.length > TRACK_PREFIX.length) {
-            name.substring(TRACK_PREFIX.length).trim()
-        } else {
-            "Shulker Box"
-        }
-    }
 
     private var openChestPos: BlockPos? = null
     private var openChestInvSnapshot: MutableMap<String, ItemStack>? = null
