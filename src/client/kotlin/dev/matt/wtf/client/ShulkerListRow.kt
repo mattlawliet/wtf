@@ -1,6 +1,6 @@
 package dev.matt.wtf.client
 
-import net.minecraft.client.gui.GuiGraphics
+import net.minecraft.client.gui.GuiGraphicsExtractor
 import net.minecraft.client.gui.Font
 import net.minecraft.network.chat.Component
 import net.minecraft.world.item.ItemStack
@@ -19,7 +19,7 @@ class ShulkerListRow(
         const val SLOT_SIZE = 16
     }
 
-    fun render(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int, isHovered: Boolean, isSelected: Boolean) {
+    fun render(graphics: GuiGraphicsExtractor, font: Font, x: Int, y: Int, width: Int, isHovered: Boolean, isSelected: Boolean) {
         val bgColor = when {
             isSelected -> 0xFF4A4A4A.toInt()
             isHovered -> 0xFF3A3A3A.toInt()
@@ -37,7 +37,7 @@ class ShulkerListRow(
             ShulkerSectionType.EXTERNAL_INV -> 0xFF55FFFF.toInt()
         }
 
-        graphics.renderItem(stack, x + 2, y + (BASE_ROW_HEIGHT - SLOT_SIZE) / 2)
+        graphics.item(stack, x + 2, y + (BASE_ROW_HEIGHT - SLOT_SIZE) / 2)
 
         val displayName = name.string
         val prefix = if (lastKnown && section == ShulkerSectionType.EXTERNAL_INV) "§c[LK]§r " else ""
@@ -49,12 +49,12 @@ class ShulkerListRow(
             font.plainSubstrByWidth(fullName, maxTextWidth)
         else fullName
 
-        graphics.drawString(font, truncatedName, x + textLeftPad, y + (BASE_ROW_HEIGHT - 8) / 2, textColor, false)
+        graphics.text(font, truncatedName, x + textLeftPad, y + (BASE_ROW_HEIGHT - 8) / 2, textColor, false)
 
         if (matchPercent > 0f) {
             val percentText = "${(matchPercent * 100).toInt()}%"
             val percentWidth = font.width(percentText)
-            graphics.drawString(
+            graphics.text(
                 font,
                 Component.literal(percentText),
                 x + width - percentWidth - 4,

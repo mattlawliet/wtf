@@ -1,7 +1,7 @@
 package dev.matt.wtf.client
 
 import net.minecraft.client.Minecraft
-import net.minecraft.client.gui.GuiGraphics
+import net.minecraft.client.gui.GuiGraphicsExtractor
 import net.minecraft.client.gui.components.EditBox
 import net.minecraft.client.gui.screens.Screen
 import net.minecraft.client.input.MouseButtonEvent
@@ -99,15 +99,15 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         }
     }
 
-    override fun render(graphics: GuiGraphics, mouseX: Int, mouseY: Int, delta: Float) {
-        super.render(graphics, mouseX, mouseY, delta)
+    override fun extractRenderState(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int, delta: Float) {
+        super.extractRenderState(graphics, mouseX, mouseY, delta)
 
         renderLeftPanel(graphics, mouseX, mouseY)
         renderPreviewPanel(graphics)
         renderPreviewGridTooltip(graphics, mouseX, mouseY)
     }
 
-    private fun renderLeftPanel(graphics: GuiGraphics, mouseX: Int, mouseY: Int) {
+    private fun renderLeftPanel(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
         val panelY = searchHeight + 5
         val panelHeight = height - panelY - 5
         
@@ -160,7 +160,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         }
     }
 
-    private fun renderPreviewPanel(graphics: GuiGraphics) {
+    private fun renderPreviewPanel(graphics: GuiGraphicsExtractor) {
         val panelY = searchHeight + 5
         val panelHeight = height - panelY - 5
         
@@ -172,7 +172,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         val selected = allEntries.find { it.id == selectedId }
         if (selected == null) {
             val hint = Component.literal("Select a shulker")
-            graphics.drawString(font, hint, previewX, panelY + 30, 0xFF808080.toInt(), true)
+            graphics.text(font, hint, previewX, panelY + 30, 0xFF808080.toInt(), true)
             return
         }
 
@@ -197,8 +197,8 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             val item = items.getOrNull(i)
             if (item != null && !item.isEmpty) {
                 val itemOffset = ((cellSize - 16) / 2).coerceAtLeast(0)
-                graphics.renderItem(item, x + itemOffset, y + itemOffset)
-                graphics.renderItemDecorations(font, item, x + itemOffset, y + itemOffset)
+                graphics.item(item, x + itemOffset, y + itemOffset)
+                graphics.itemDecorations(font, item, x + itemOffset, y + itemOffset)
             }
         }
 
@@ -210,7 +210,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             "ex-inv" -> 0xFF55FFFF.toInt()
             else -> 0xFFFFFFFF.toInt()
         }
-        graphics.drawString(font, selected.name, previewX, nameY, nameColor, false)
+        graphics.text(font, selected.name, previewX, nameY, nameColor, false)
 
         val detailText = when (selected.section) {
             "block" -> {
@@ -238,7 +238,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             }
             else -> ""
         }
-        graphics.drawString(font, Component.literal(detailText), previewX, nameY + 12, 0xFF808080.toInt(), false)
+        graphics.text(font, Component.literal(detailText), previewX, nameY + 12, 0xFF808080.toInt(), false)
 
         val statusParts = mutableListOf<String>()
         if (selected.from.isNotEmpty()) {
@@ -253,7 +253,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
             statusParts.add("items $itemCount")
         }
         val statusText = font.plainSubstrByWidth(statusParts.joinToString(" | "), previewWidth)
-        graphics.drawString(font, Component.literal(statusText), previewX, nameY + 24, 0xFFFFFF00.toInt(), false)
+        graphics.text(font, Component.literal(statusText), previewX, nameY + 24, 0xFFFFFF00.toInt(), false)
     }
 
     private fun compactLocation(location: String): String {
@@ -264,7 +264,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         return "$dim $coords"
     }
 
-    private fun renderPreviewGridTooltip(graphics: GuiGraphics, mouseX: Int, mouseY: Int) {
+    private fun renderPreviewGridTooltip(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
         val selected = allEntries.find { it.id == selectedId } ?: return
         val items = previewItemsById[selected.id]
             ?: selected.items.takeIf { it.size == 27 }

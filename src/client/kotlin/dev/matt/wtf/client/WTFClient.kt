@@ -115,25 +115,46 @@ object WTFClient : ClientModInitializer {
 
     fun onEntityRemoved(entityId: Int, reason: net.minecraft.world.entity.Entity.RemovalReason) {
         val eidStr = entityId.toString()
-        val shulker = trackedShulkers.values.find { it.entity_id == eidStr && it.state == "item" } ?: return
 
+        // Fast path: entity was in "item" state (tick handler found it)
+        val shulker = trackedShulkers.values.find { it.entity_id == eidStr && it.state == "item" }
+        if (shulker != null) {
+            transferToInv(shulker, "entity_removed")
+            return
+        }
+
+        // Race fallback: entity removed before tick handler scanned for it.
+        // PendingItemEntity still exists with state == "block".
+        val mc = Minecraft.getInstance()
+        val entity = mc.level?.getEntity(entityId) ?: return
+        if (entity !is net.minecraft.world.entity.item.ItemEntity) return
+        if (!isShulkerItem(entity.item)) return
+
+        val pending = pendingItemEntities.firstOrNull { p ->
+            entity.distanceToSqr(p.pos.x + 0.5, p.pos.y + 0.5, p.pos.z + 0.5) < 16.0
+        } ?: return
+
+        val entry = trackedShulkers[pending.uuid] ?: return
+        pendingItemEntities.remove(pending)
+        transferToInv(entry, "entity_removed:pending_fallback")
+    }
+
+    private fun transferToInv(entry: ShulkerState, from: String) {
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
-
-        // Check if player is near last known coords
-        val coords = shulker.coords.split(",").mapNotNull { it.toDoubleOrNull() }
+        val coords = entry.coords.split(",").mapNotNull { it.toDoubleOrNull() }
         if (coords.size == 3) {
             val distSq = player.distanceToSqr(coords[0], coords[1], coords[2])
-            if (distSq < 64.0) { // 8 blocks radius
-                shulker.state = "inv"
-                shulker.entity_id = ""
-                shulker.last_update_time = System.currentTimeMillis().toString()
-                shulker.from = "entity_removed"
-                transitOrder.remove(shulker.uuid)
-                transitOrder.addLast(shulker.uuid)
-                if (shulker.happy) notify("§7item§f → §ainv§f §7(${shulker.name})§f")
+            if (distSq < 64.0) {
+                entry.state = "inv"
+                entry.entity_id = ""
+                entry.last_update_time = System.currentTimeMillis().toString()
+                entry.from = from
+                transitOrder.remove(entry.uuid)
+                transitOrder.addLast(entry.uuid)
+                if (entry.happy) notify("§7→ §ainv§f §7(${entry.name})§f")
                 scanQueued = true
-                throttleTicks = 10 // Increase buffer to 10 ticks (~500ms) for network sync
+                throttleTicks = 10
                 save()
             }
         }
@@ -616,8 +637,8 @@ object WTFClient : ClientModInitializer {
                         debugMode = !debugMode
                         debugVerbose = false
                         val status = if (debugMode) "§aon§f" else "§coff§f"
-                        Minecraft.getInstance().gui.chat.addMessage(
-                            Component.literal("§7[§fWTF§7] Debug $status")
+                        Minecraft.getInstance().gui.chat.addClientSystemMessage(
+                            Component.literal("§7[§fWTF§f] Debug $status")
                         )
                         if (debugMode) {
                             val id = getWorldId()
@@ -653,8 +674,8 @@ object WTFClient : ClientModInitializer {
                                 debugVerbose = !debugVerbose
                             }
                             val status = if (debugVerbose) "§averbose§f" else if (debugMode) "§aon (standard)§f" else "§coff§f"
-                            Minecraft.getInstance().gui.chat.addMessage(
-                                Component.literal("§7[§fWTF§7] Debug $status")
+                            Minecraft.getInstance().gui.chat.addClientSystemMessage(
+                                Component.literal("§7[§fWTF§f] Debug $status")
                             )
                             1
                         }
@@ -680,7 +701,7 @@ object WTFClient : ClientModInitializer {
                     // Find a shulker in 'inv' state that is missing from recent scan
                     // Or just find the best match in 'inv' state
                     val match = trackedShulkers.values.firstOrNull { 
-                        it.state == "inv" && it.contentHash == hash
+                        (it.state == "inv" || it.state == "ex-inv") && it.contentHash == hash
                     }
                     
                     if (match != null) {
@@ -1063,14 +1084,11 @@ object WTFClient : ClientModInitializer {
             }
         }
 
-        // 4. Cleanup: Handle items leaving inventory
+        // 4. Cleanup: Orphan stale inv entries (not in player inventory anymore)
         for (entry in trackedShulkers.values) {
             if (entry.state == "inv" && entry.uuid !in foundUUIDs) {
-                val lastUpdate = entry.last_update_time.toLongOrNull() ?: 0L
-                val elapsed = System.currentTimeMillis() - lastUpdate
-                if (elapsed > 5000) { // 5 seconds grace
-                     log("scan: shulker ${entry.uuid} (${entry.name}) is missing from inventory for ${elapsed}ms, but NOT flipping to item state per user instruction")
-                }
+                entry.state = "ex-inv"
+                log("scan: ${entry.uuid} (${entry.name}) left inventory → ex-inv")
             }
         }
 
@@ -1426,7 +1444,7 @@ object WTFClient : ClientModInitializer {
 
     private fun notify(msg: String) {
         if (!debugMode) return
-        Minecraft.getInstance().gui.chat.addMessage(Component.literal("§7[§fWTF§7] §f$msg"))
+        Minecraft.getInstance().gui.chat.addClientSystemMessage(Component.literal("§7[§fWTF§7] §f$msg"))
         log(msg)
     }
 
