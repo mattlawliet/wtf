@@ -401,6 +401,7 @@ object WTFClient : ClientModInitializer {
         val nameMatch = trackedShulkers.values.firstOrNull {
             it.uuid !in alreadyResolved &&
                 it.happy &&
+                (it.state == "inv" || it.state == "item") &&
                 it.type == stackType &&
                 it.name == stackName
         }
