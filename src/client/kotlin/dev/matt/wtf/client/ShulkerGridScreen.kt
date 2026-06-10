@@ -6,7 +6,6 @@ import net.minecraft.client.gui.components.EditBox
 import net.minecraft.client.gui.screens.Screen
 import net.minecraft.client.input.MouseButtonEvent
 import net.minecraft.network.chat.Component
-import net.minecraft.resources.Identifier
 import net.minecraft.world.item.ItemStack
 
 class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Component.literal("Happy Shulkers")) {
@@ -241,13 +240,28 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         }
         graphics.drawString(font, Component.literal(detailText), previewX, nameY + 12, 0xFF808080.toInt(), false)
 
-        val itemCount = items.count { !it.isEmpty }
-        val debugStatus = when {
-            selected.cachedContentsNbt == null -> "items=$itemCount cached=NULL"
-            selected.cachedContentsNbt.isEmpty() -> "items=$itemCount cached=EMPTY"
-            else -> "items=$itemCount cached=${selected.cachedContentsNbt.size}B"
+        val statusParts = mutableListOf<String>()
+        if (selected.from.isNotEmpty()) {
+            statusParts.add("from ${selected.from}")
         }
-        graphics.drawString(font, Component.literal(debugStatus), previewX, nameY + 24, 0xFFFFFF00.toInt(), false)
+        val lastLocation = selected.lastLocation
+        if (!lastLocation.isNullOrEmpty()) {
+            statusParts.add("last ${compactLocation(lastLocation)}")
+        }
+        if (statusParts.isEmpty()) {
+            val itemCount = items.count { !it.isEmpty }
+            statusParts.add("items $itemCount")
+        }
+        val statusText = font.plainSubstrByWidth(statusParts.joinToString(" | "), previewWidth)
+        graphics.drawString(font, Component.literal(statusText), previewX, nameY + 24, 0xFFFFFF00.toInt(), false)
+    }
+
+    private fun compactLocation(location: String): String {
+        val cleaned = location.replace("§c[Last Known]§7 ", "")
+        if (!cleaned.contains(':')) return cleaned
+        val dim = cleaned.substringBeforeLast(':').substringAfterLast(':')
+        val coords = cleaned.substringAfterLast(':').replace('_', ',')
+        return "$dim $coords"
     }
 
     private fun renderPreviewGridTooltip(graphics: GuiGraphics, mouseX: Int, mouseY: Int) {
@@ -279,13 +293,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         val item = items.getOrNull(slotIndex) ?: return
         if (item.isEmpty) return
 
-        val mc = Minecraft.getInstance()
-        val player = mc.player
-        val lines = if (player != null) Screen.getTooltipFromItem(mc, item) else listOf(item.hoverName)
-        val components = lines.map { net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipComponent.create(it.visualOrderText) }
-        graphics.renderTooltip(font, components, mouseX, mouseY,
-            net.minecraft.client.gui.screens.inventory.tooltip.DefaultTooltipPositioner.INSTANCE,
-            Identifier.fromNamespaceAndPath("wtf", "item_tooltip"))
+        graphics.setTooltipForNextFrame(font, item, mouseX, mouseY)
     }
 
     override fun mouseClicked(mouseButtonEvent: MouseButtonEvent, bl: Boolean): Boolean {

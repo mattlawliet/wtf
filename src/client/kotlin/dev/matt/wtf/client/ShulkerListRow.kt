@@ -40,7 +40,7 @@ class ShulkerListRow(
         graphics.renderItem(stack, x + 2, y + (BASE_ROW_HEIGHT - SLOT_SIZE) / 2)
 
         val displayName = name.string
-        val prefix = if (lastKnown) "§c[LK]§r " else ""
+        val prefix = if (lastKnown && section == ShulkerSectionType.EXTERNAL_INV) "§c[LK]§r " else ""
         val textLeftPad = SLOT_SIZE + 4
         val rightPad = 4 + (if (matchPercent > 0f) font.width("${(matchPercent * 100).toInt()}%") + 4 else 0)
         val maxTextWidth = width - textLeftPad - rightPad

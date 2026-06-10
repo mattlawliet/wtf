@@ -14,6 +14,8 @@ data class ShulkerEntry(
     val items: List<ItemStack> = emptyList(),
     val cachedContentsNbt: ByteArray? = null,
     val matchPercent: Float = 0f,
+    val from: String = "",
+    val lastLocation: String? = null,
     val lastKnown: Boolean = false
 )
 

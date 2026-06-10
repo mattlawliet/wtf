@@ -6,10 +6,10 @@ import dev.matt.wtf.client.mixin.AbstractContainerScreenAccessor
 import dev.matt.wtf.client.mixin.ShulkerBoxMenuAccessor
 import com.mojang.blaze3d.platform.InputConstants
 import net.fabricmc.api.ClientModInitializer
-import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager
+import net.fabricmc.fabric.api.client.command.v2.ClientCommands
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
-import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper
+import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents
 import net.fabricmc.fabric.api.client.screen.v1.Screens
@@ -147,7 +147,13 @@ object WTFClient : ClientModInitializer {
 
 
     private var openChestPos: BlockPos? = null
-    private var openChestInvSnapshot: MutableMap<String, ItemStack>? = null
+    private var openChestInvSnapshot: MutableMap<String, InventorySnapshotEntry>? = null
+
+    data class InventorySnapshotEntry(
+        val slotIndex: Int,
+        val locKey: String,
+        val stack: ItemStack
+    )
 
     private fun getContainerBlockPos(menu: net.minecraft.world.inventory.AbstractContainerMenu, level: Level): Pair<BlockPos, String>? {
         for (slot in menu.slots) {
@@ -189,7 +195,7 @@ object WTFClient : ClientModInitializer {
             }
         }
 
-        openChestInvSnapshot = captureInventorySnapshot()
+        openChestInvSnapshot = if (menu != null) captureInventorySnapshot(menu, mc.player) else mutableMapOf()
     }
 
     private fun handleChestClosed(screen: Any) {
@@ -203,9 +209,6 @@ object WTFClient : ClientModInitializer {
         val containerInfo = getContainerBlockPos(menu, level)
         val containerPos = containerInfo?.first ?: openChestPos ?: return
 
-        openChestPos = null
-        openChestInvSnapshot = null
-
         val chestLoc = blockLocation(containerPos, level)
         val coordStr = "${containerPos.x},${containerPos.y},${containerPos.z}"
         val dimStr = level.dimension().identifier().toString()
@@ -218,16 +221,21 @@ object WTFClient : ClientModInitializer {
             if (stack.isEmpty || !isShulkerItem(stack)) continue
 
             val stackUUID = getItemUUID(stack)
-            val uuid = if (stackUUID != null) {
-                stackUUID
+            val stackHash = fingerprintFromItem(stack) ?: ""
+            val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
+            val stackType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+            val matchedUUID = stackUUID?.takeIf { it in trackedShulkers }
+                ?: resolveTrackedChestStack(stackHash, stackName, stackType, shulkersInChest)
+            val uuid = if (matchedUUID != null) {
+                if (stackUUID != matchedUUID) {
+                    injectItemUUID(stack, matchedUUID)
+                }
+                matchedUUID
             } else {
                 // Assign UUID to untracked shulker found in chest
                 val newUuid = ensureItemUUID(stack)
                 // Create a tracking entry if not already tracked (discovered in chest)
                 if (newUuid !in trackedShulkers) {
-                    val hash = fingerprintFromItem(stack) ?: ""
-                    val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
-                    val stackType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
                     trackedShulkers[newUuid] = ShulkerState(
                         uuid = newUuid,
                         state = "ex-inv",
@@ -236,7 +244,7 @@ object WTFClient : ClientModInitializer {
                         last_update_time = System.currentTimeMillis().toString(),
                         name = stackName,
                         happy = false,
-                        contentHash = hash,
+                        contentHash = stackHash,
                         from = "chest:new_discovery",
                         type = stackType,
                         cachedContents = serializeShulkerContents(stack)
@@ -252,49 +260,188 @@ object WTFClient : ClientModInitializer {
                 val cachedNbt = serializeShulkerContents(stack)
                 val oldState = entry.state
                 val oldCoords = entry.coords
+                val oldFrom = entry.from
 
+                if (oldCoords != coordStr || entry.dim != dimStr) {
+                    entry.lastLocation = "${entry.dim}:${oldCoords}"
+                }
                 entry.state = "ex-inv"
                 entry.lastKnown = false
                 entry.entity_id = ""
                 entry.dim = dimStr
                 entry.coords = coordStr
                 entry.last_update_time = System.currentTimeMillis().toString()
-                entry.from = "chest:scan"
+                entry.from = if (stackUUID == uuid) "chest:uuid" else "chest:matched"
                 entry.cachedContents = cachedNbt
+                if (stackHash.isNotEmpty()) entry.contentHash = stackHash
+                entry.type = stackType
 
                 if (oldState != "ex-inv" || oldCoords != coordStr) {
                     notify("§echest§f ← §a${oldState}§f §7(${entry.name})§f")
-                    log("handleChestClosed: tracked shulker placed/found in chest at $chestLoc, uuid=$uuid")
+                    log("handleChestClosed: tracked shulker placed/found in chest at $chestLoc, uuid=$uuid from=${entry.from} oldFrom=$oldFrom")
                 }
             }
         }
 
-        // 2. Self-Correction: Find shulkers previously marked in THIS chest that are now MISSING
         var corrected = false
+
+        // If a hopper pulls the shulker out before close, it never appears in the final chest scan.
+        // Use the open/close inventory delta to still record the chest as the last known external location.
+        val currentInventoryByUuid = captureInventorySnapshot(menu, player)
+        val currentInventoryBySlot = currentInventoryByUuid.values.associateBy { it.slotIndex }
+        for ((uuid, snapshot) in openChestInvSnapshot ?: emptyMap()) {
+            if (uuid in shulkersInChest) continue
+            val entry = trackedShulkers[uuid] ?: continue
+            if (entry.state != "inv") continue
+            if (uuid in currentInventoryByUuid) continue
+
+            val currentSourceStack = currentInventoryBySlot[snapshot.slotIndex]?.stack
+            if (currentSourceStack != null && getItemUUID(currentSourceStack) == uuid) continue
+            if (currentSourceStack != null && ItemStack.hashItemAndComponents(currentSourceStack) == ItemStack.hashItemAndComponents(snapshot.stack)) continue
+
+            val oldCoords = entry.coords
+            entry.lastLocation = "${entry.dim}:$oldCoords"
+            entry.state = "ex-inv"
+            entry.lastKnown = true
+            entry.entity_id = ""
+            entry.dim = dimStr
+            entry.coords = coordStr
+            entry.last_update_time = System.currentTimeMillis().toString()
+            entry.from = "chest:vanished_on_insert"
+            entry.cachedContents = chooseRicherCache(serializeShulkerContents(snapshot.stack), entry.cachedContents)
+            fingerprintFromItem(snapshot.stack)?.takeIf { it.isNotEmpty() }?.let { entry.contentHash = it }
+            log("handleChestClosed: inv -> chest last-known ${entry.name} uuid=$uuid from=${snapshot.locKey} to=$chestLoc; source slot changed and not present in final chest scan")
+            if (entry.happy) notify("§ainv§f → §cchest LK§f §7(${entry.name})§f")
+            corrected = true
+        }
+
+        // 2. Self-Correction: Find shulkers previously marked in THIS chest that are now MISSING
         for (entry in trackedShulkers.values) {
             if (entry.state == "ex-inv" && entry.coords == coordStr && entry.dim == dimStr) {
                 if (entry.uuid !in shulkersInChest && !entry.lastKnown) {
-                    log("handleChestClosed self-correction: shulker ${entry.name} (uuid=${entry.uuid}) is no longer in chest at $chestLoc. Marking as lastKnown=true.")
-                    entry.lastKnown = true
-                    entry.last_update_time = System.currentTimeMillis().toString()
-                    entry.from = "chest:missing_on_close"
+                    val invMatch = findInventoryStackForEntry(entry, menu, player)
+                    if (invMatch != null) {
+                        val (locKey, stack) = invMatch
+                        injectItemUUID(stack, entry.uuid)
+                        entry.lastLocation = "${entry.dim}:${entry.coords}"
+                        entry.state = "inv"
+                        entry.lastKnown = false
+                        entry.entity_id = ""
+                        entry.coords = locKey
+                        entry.dim = dimStr
+                        entry.last_update_time = System.currentTimeMillis().toString()
+                        entry.from = "chest:take_to_inv"
+                        entry.cachedContents = chooseRicherCache(serializeShulkerContents(stack), entry.cachedContents)
+                        fingerprintFromItem(stack)?.takeIf { it.isNotEmpty() }?.let { entry.contentHash = it }
+                        log("handleChestClosed: chest -> inv ${entry.name} uuid=${entry.uuid} from=$chestLoc to=$locKey")
+                        if (entry.happy) notify("§echest§f → §ainv§f §7(${entry.name})§f")
+                    } else {
+                        log("handleChestClosed self-correction: shulker ${entry.name} (uuid=${entry.uuid}) is no longer in chest at $chestLoc. Marking as external last-known.")
+                        entry.lastKnown = true
+                        entry.lastLocation = "${entry.dim}:${entry.coords}"
+                        entry.last_update_time = System.currentTimeMillis().toString()
+                        entry.from = "chest:missing_on_close"
+                    }
                     corrected = true
                 }
             }
         }
 
+        openChestPos = null
+        openChestInvSnapshot = null
         save()
     }
 
-    private fun captureInventorySnapshot(): MutableMap<String, ItemStack> {
-        val mc = Minecraft.getInstance() ?: return mutableMapOf()
-        val player = mc.player ?: return mutableMapOf()
-        val snapshot = mutableMapOf<String, ItemStack>()
-        for (i in 0 until player.inventoryMenu.slots.size) {
-            val stack = player.inventoryMenu.getSlot(i).item
+    private fun resolveTrackedChestStack(
+        stackHash: String,
+        stackName: String,
+        stackType: String,
+        alreadyResolved: Set<String>
+    ): String? {
+        if (stackHash.isNotEmpty()) {
+            val hashMatches = trackedShulkers.values.filter {
+                it.uuid !in alreadyResolved &&
+                    it.type == stackType &&
+                    it.contentHash == stackHash &&
+                    (it.state == "inv" || it.state == "item" || it.state == "block" || it.state == "ex-inv")
+            }
+            val hashMatch = hashMatches.firstOrNull { it.happy } ?: hashMatches.firstOrNull()
+            if (hashMatch != null) {
+                log("chest resolve: hash-matched $stackName to tracked UUID ${hashMatch.uuid}")
+                return hashMatch.uuid
+            }
+        }
+
+        val nameMatch = trackedShulkers.values.firstOrNull {
+            it.uuid !in alreadyResolved &&
+                it.happy &&
+                it.type == stackType &&
+                it.name == stackName
+        }
+        if (nameMatch != null) {
+            log("chest resolve: name-matched $stackName to tracked UUID ${nameMatch.uuid}")
+            return nameMatch.uuid
+        }
+
+        return null
+    }
+
+    private fun findInventoryStackForEntry(
+        entry: ShulkerState,
+        menu: net.minecraft.world.inventory.AbstractContainerMenu,
+        player: Player
+    ): Pair<String, ItemStack>? {
+        val snapshot = openChestInvSnapshot ?: emptyMap()
+        val candidates = mutableListOf<Pair<String, ItemStack>>()
+
+        for (slot in menu.slots) {
+            if (slot.container != player.inventory) continue
+            val stack = slot.item
+            if (stack.isEmpty || !isShulkerItem(stack)) continue
+            candidates.add(inventorySlotToKey(slot.index) to stack)
+        }
+
+        if (!menu.carried.isEmpty && isShulkerItem(menu.carried)) {
+            val carried = menu.carried
+            candidates.add("cursor" to carried)
+        }
+
+        candidates.firstOrNull { getItemUUID(it.second) == entry.uuid }?.let { return it }
+
+        val newOrChanged = candidates.filter { (_, stack) ->
+            val uuid = getItemUUID(stack)
+            val snapshotStack = uuid?.let { snapshot[it]?.stack }
+            snapshotStack == null || ItemStack.hashItemAndComponents(snapshotStack) != ItemStack.hashItemAndComponents(stack)
+        }
+
+        newOrChanged.firstOrNull { (_, stack) ->
+            val stackType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+            stackType == entry.type && fingerprintFromItem(stack) == entry.contentHash
+        }?.let { return it }
+
+        return newOrChanged.firstOrNull { (_, stack) ->
+            val stackType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+            val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
+            entry.happy && stackType == entry.type && stackName == entry.name
+        }
+    }
+
+    private fun captureInventorySnapshot(
+        menu: net.minecraft.world.inventory.AbstractContainerMenu,
+        player: Player?
+    ): MutableMap<String, InventorySnapshotEntry> {
+        if (player == null) return mutableMapOf()
+        val snapshot = mutableMapOf<String, InventorySnapshotEntry>()
+        for (slot in menu.slots) {
+            if (slot.container != player.inventory) continue
+            val stack = slot.item
             if (stack.isEmpty || !isShulkerItem(stack)) continue
             val uuid = getItemUUID(stack) ?: continue
-            snapshot[uuid] = stack.copy()
+            snapshot[uuid] = InventorySnapshotEntry(
+                slotIndex = slot.index,
+                locKey = inventorySlotToKey(slot.index),
+                stack = stack.copy()
+            )
         }
         return snapshot
     }
@@ -314,6 +461,7 @@ object WTFClient : ClientModInitializer {
         var type: String = "minecraft:shulker_box",
         var cachedContents: ByteArray? = null,
         var from: String = "",
+        var lastLocation: String? = null,
         var lastKnown: Boolean = false
     )
 
@@ -330,7 +478,7 @@ object WTFClient : ClientModInitializer {
         val keyBinding = net.minecraft.client.KeyMapping(
             "key.wtf.shulker_list", InputConstants.Type.KEYSYM, -1, category
         )
-        KeyBindingHelper.registerKeyBinding(keyBinding)
+        KeyMappingHelper.registerKeyMapping(keyBinding)
 
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             while (keyBinding.consumeClick()) {
@@ -418,7 +566,8 @@ object WTFClient : ClientModInitializer {
                                     }
                                 }
                                 if (!stillExists) {
-                                    log("tick verify: block at ${shulker.coords} is now $blockId (was expected to hold shulker ${shulker.name}). Marking as lastKnown=true.")
+                                    log("tick verify: block at ${shulker.coords} is now $blockId (was expected to hold shulker ${shulker.name}). Marking as last-known.")
+                                    shulker.lastLocation = "${shulker.dim}:${shulker.coords}"
                                     shulker.state = "ex-inv"
                                     shulker.lastKnown = true
                                     shulker.last_update_time = System.currentTimeMillis().toString()
@@ -456,13 +605,13 @@ object WTFClient : ClientModInitializer {
         }
 
         ClientCommandRegistrationCallback.EVENT.register { dispatcher, _ ->
-            dispatcher.register(ClientCommandManager.literal("wtf")
+            dispatcher.register(ClientCommands.literal("wtf")
                 .executes {
                     val entries = resolveHappyShulkers()
                     Minecraft.getInstance().setScreen(ShulkerGridScreen(entries))
                     1
                 }
-                .then(ClientCommandManager.literal("debug")
+                .then(ClientCommands.literal("debug")
                     .executes {
                         debugMode = !debugMode
                         debugVerbose = false
@@ -486,7 +635,7 @@ object WTFClient : ClientModInitializer {
                         }
                         1
                     }
-                    .then(ClientCommandManager.literal("verbose")
+                    .then(ClientCommands.literal("verbose")
                         .executes {
                             if (!debugMode) {
                                 debugMode = true
@@ -730,7 +879,7 @@ object WTFClient : ClientModInitializer {
             .pos(a.leftPos + a.imageWidth / 2 - 6, a.topPos + 3)
             .size(12, 12)
             .build()
-        Screens.getButtons(screen).add(button)
+        Screens.getWidgets(screen).add(button)
     }
 
     private fun handleShulkerScreenClosed(screen: ShulkerBoxScreen) {
@@ -1050,6 +1199,8 @@ object WTFClient : ClientModInitializer {
                 serial = 0,
                 items = items,
                 cachedContentsNbt = entry.cachedContents,
+                from = entry.from,
+                lastLocation = entry.lastLocation,
                 lastKnown = entry.lastKnown
             )
             entries.add(shulkerEntry)
@@ -1384,6 +1535,15 @@ internal fun indexToKey(index: Int): String {
         in 9..35 -> "inv:${index - 9 + 1}"
         in 36..44 -> "hotbar:${index - 36 + 1}"
         45 -> "offhand"
+        else -> "slot:$index"
+    }
+}
+
+internal fun inventorySlotToKey(index: Int): String {
+    return when (index) {
+        in 0..8 -> "hotbar:${index + 1}"
+        in 9..35 -> "inv:${index - 9 + 1}"
+        40 -> "offhand"
         else -> "slot:$index"
     }
 }
