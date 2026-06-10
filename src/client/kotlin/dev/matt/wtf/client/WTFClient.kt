@@ -343,7 +343,7 @@ object WTFClient : ClientModInitializer {
         // 2. Self-Correction: Find shulkers previously marked in THIS chest that are now MISSING
         for (entry in trackedShulkers.values) {
             if (entry.state == "ex-inv" && entry.coords == coordStr && entry.dim == dimStr) {
-                if (entry.uuid !in shulkersInChest && !entry.lastKnown) {
+                if (entry.uuid !in shulkersInChest) {
                     val invMatch = findInventoryStackForEntry(entry, menu, player)
                     if (invMatch != null) {
                         val (locKey, stack) = invMatch
@@ -360,14 +360,15 @@ object WTFClient : ClientModInitializer {
                         fingerprintFromItem(stack)?.takeIf { it.isNotEmpty() }?.let { entry.contentHash = it }
                         log("handleChestClosed: chest -> inv ${entry.name} uuid=${entry.uuid} from=$chestLoc to=$locKey")
                         if (entry.happy) notify("§echest§f → §ainv§f §7(${entry.name})§f")
-                    } else {
+                        corrected = true
+                    } else if (!entry.lastKnown) {
                         log("handleChestClosed self-correction: shulker ${entry.name} (uuid=${entry.uuid}) is no longer in chest at $chestLoc. Marking as external last-known.")
                         entry.lastKnown = true
                         entry.lastLocation = "${entry.dim}:${entry.coords}"
                         entry.last_update_time = System.currentTimeMillis().toString()
                         entry.from = "chest:missing_on_close"
+                        corrected = true
                     }
-                    corrected = true
                 }
             }
         }
@@ -1083,6 +1084,29 @@ object WTFClient : ClientModInitializer {
                     nameMatch.from = "scan:name_match"
                     foundUUIDs.add(nameMatch.uuid)
                     transitOrder.remove(nameMatch.uuid)
+                    changed = true
+                    continue
+                }
+
+                // Ex-inv recovery: re-link ex-inv entries that reappeared in inventory
+                val recoveryMatch = trackedShulkers.values.firstOrNull {
+                    it.uuid !in foundUUIDs &&
+                        it.state == "ex-inv" &&
+                        it.contentHash == hash
+                }
+
+                if (recoveryMatch != null) {
+                    log("scan: recovered ${ss.second} from ex-inv UUID ${recoveryMatch.uuid} (hash=${hash.take(8)})")
+                    injectItemUUID(ss.first, recoveryMatch.uuid)
+                    recoveryMatch.state = "inv"
+                    recoveryMatch.entity_id = ""
+                    recoveryMatch.coords = ss.second
+                    recoveryMatch.dim = level.dimension().identifier().toString()
+                    recoveryMatch.last_update_time = System.currentTimeMillis().toString()
+                    recoveryMatch.from = "scan:ex_inv_recovery"
+                    recoveryMatch.lastKnown = false
+                    foundUUIDs.add(recoveryMatch.uuid)
+                    transitOrder.remove(recoveryMatch.uuid)
                     changed = true
                     continue
                 }
