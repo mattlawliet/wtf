@@ -309,7 +309,7 @@ object WTFClient : ClientModInitializer {
         // If a hopper pulls the shulker out before close, it never appears in the final chest scan.
         // Use the open/close inventory delta to still record the chest as the last known external location.
         val currentInventoryByUuid = captureInventorySnapshot(menu, player)
-        val currentInventoryBySlot = currentInventoryByUuid.values.associateBy { it.slotIndex }
+        val currentInventoryBySlot = captureInventoryBySlot(menu, player)
         for ((uuid, snapshot) in openChestInvSnapshot ?: emptyMap()) {
             if (uuid in shulkersInChest) continue
             val entry = trackedShulkers[uuid] ?: continue
@@ -459,6 +459,25 @@ object WTFClient : ClientModInitializer {
             if (stack.isEmpty || !isShulkerItem(stack)) continue
             val uuid = getItemUUID(stack) ?: continue
             snapshot[uuid] = InventorySnapshotEntry(
+                slotIndex = slot.index,
+                locKey = inventorySlotToKey(slot.index),
+                stack = stack.copy()
+            )
+        }
+        return snapshot
+    }
+
+    private fun captureInventoryBySlot(
+        menu: net.minecraft.world.inventory.AbstractContainerMenu,
+        player: Player?
+    ): Map<Int, InventorySnapshotEntry> {
+        if (player == null) return emptyMap()
+        val snapshot = mutableMapOf<Int, InventorySnapshotEntry>()
+        for (slot in menu.slots) {
+            if (slot.container != player.inventory) continue
+            val stack = slot.item
+            if (stack.isEmpty || !isShulkerItem(stack)) continue
+            snapshot[slot.index] = InventorySnapshotEntry(
                 slotIndex = slot.index,
                 locKey = inventorySlotToKey(slot.index),
                 stack = stack.copy()
@@ -1024,7 +1043,7 @@ object WTFClient : ClientModInitializer {
 
             // Try to match with an unclaimed shulker in our map
             val match = trackedShulkers.values.firstOrNull { 
-                it.uuid !in foundUUIDs && it.contentHash == hash && (it.state == "inv" || it.state == "item" || it.state == "block")
+                it.uuid !in foundUUIDs && it.contentHash == hash && (it.state == "inv" || it.state == "item")
             }
 
             if (match != null) {
@@ -1044,6 +1063,7 @@ object WTFClient : ClientModInitializer {
                 val nameMatch = trackedShulkers.values.firstOrNull {
                     it.uuid !in foundUUIDs &&
                         it.happy &&
+                        (it.state == "inv" || it.state == "item") &&
                         it.type == stackType &&
                         it.name == stackName
                 }
