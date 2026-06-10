@@ -317,8 +317,12 @@ object WTFClient : ClientModInitializer {
             if (uuid in currentInventoryByUuid) continue
 
             val currentSourceStack = currentInventoryBySlot[snapshot.slotIndex]?.stack
-            if (currentSourceStack != null && getItemUUID(currentSourceStack) == uuid) continue
-            if (currentSourceStack != null && ItemStack.hashItemAndComponents(currentSourceStack) == ItemStack.hashItemAndComponents(snapshot.stack)) continue
+            if (currentSourceStack != null) {
+                if (getItemUUID(currentSourceStack) == uuid) continue
+                val snapFp = fingerprintFromItem(snapshot.stack)
+                val currFp = fingerprintFromItem(currentSourceStack)
+                if (snapFp != null && currFp != null && snapFp == currFp) continue
+            }
 
             val oldCoords = entry.coords
             entry.lastLocation = "${entry.dim}:$oldCoords"
