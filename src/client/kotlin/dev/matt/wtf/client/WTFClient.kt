@@ -4,6 +4,7 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import dev.matt.wtf.client.mixin.AbstractContainerScreenAccessor
 import dev.matt.wtf.client.mixin.ShulkerBoxMenuAccessor
+import dev.matt.wtf.client.mixin.EntityAccessor
 import com.mojang.blaze3d.platform.InputConstants
 import net.fabricmc.api.ClientModInitializer
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands
@@ -152,7 +153,17 @@ object WTFClient : ClientModInitializer {
                 entry.from = from
                 transitOrder.remove(entry.uuid)
                 transitOrder.addLast(entry.uuid)
+                log("transition: ${entry.name} (${entry.uuid.take(8)}) → inv from=$from")
                 if (entry.happy) notify("§7→ §ainv§f §7(${entry.name})§f")
+                // Refresh contentHash from inventory so ENTITY_LOAD can match on Q-drop
+                val invMenu = player.inventoryMenu
+                for (i in 0 until invMenu.slots.size) {
+                    val stack = invMenu.getSlot(i).item
+                    if (isShulkerItem(stack) && getItemUUID(stack) == entry.uuid) {
+                        fingerprintFromItem(stack)?.let { entry.contentHash = it }
+                        break
+                    }
+                }
                 scanQueued = true
                 throttleTicks = 10
                 save()
@@ -445,11 +456,15 @@ object WTFClient : ClientModInitializer {
             stackType == entry.type && fingerprintFromItem(stack) == entry.contentHash
         }?.let { return it }
 
-        return newOrChanged.firstOrNull { (_, stack) ->
+        val nameMatch = newOrChanged.firstOrNull { (_, stack) ->
             val stackType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
             val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
             entry.happy && stackType == entry.type && stackName == entry.name && fingerprintFromItem(stack) == entry.contentHash
         }
+        if (nameMatch == null && newOrChanged.isNotEmpty()) {
+            log("findInventoryStackForEntry: no match for ${entry.name} (${entry.uuid.take(8)}) among ${newOrChanged.size} candidates")
+        }
+        return nameMatch
     }
 
     private fun captureInventorySnapshot(
@@ -570,6 +585,7 @@ object WTFClient : ClientModInitializer {
                         log("block -> item: found entity ${found.id} for shulker ${shulker.name} (uuid=${pending.uuid})")
                         if (shulker.happy) notify("§eblock§f → §7item§f §7(${shulker.name})§f")
                         claimedEntityIds.add(found.id)
+                        (found as EntityAccessor).invokeSetSharedFlag(6, true)
                     }
                     iterator.remove()
                 }
@@ -729,13 +745,16 @@ object WTFClient : ClientModInitializer {
                     }
                     
                     if (match != null) {
+                        val oldState = match.state
                         match.state = "item"
                         match.entity_id = entity.id.toString()
                         match.dim = world.dimension().identifier().toString()
                         match.coords = "${entity.x},${entity.y},${entity.z}"
                         match.last_update_time = System.currentTimeMillis().toString()
                         match.from = "spawn:drop"
+                        log("transition: ${match.name} (${match.uuid.take(8)}) $oldState → item from=spawn:drop")
                         if (match.happy) notify("§ainv§f → §7item§f §7(${match.name})§f")
+                        (entity as EntityAccessor).invokeSetSharedFlag(6, true)
                         save()
                     }
                 }
@@ -984,14 +1003,17 @@ object WTFClient : ClientModInitializer {
             if (uuid != null && trackedShulkers.containsKey(uuid)) {
                 val entry = trackedShulkers[uuid]!!
                 if (entry.state != "inv" || entry.coords != ss.second) {
-                    log("scan: matched UUID $uuid in ${ss.second}, state update ${entry.state} -> inv")
+                    log("transition: ${entry.name} (${uuid.take(8)}) ${entry.state} → inv from=scan:uuid (changed)")
                     entry.state = "inv"
                     entry.entity_id = ""
                     entry.coords = ss.second
                     entry.dim = level.dimension().identifier().toString()
                     entry.last_update_time = System.currentTimeMillis().toString()
                     entry.from = "scan:uuid"
+                    entry.contentHash = ss.third
                     changed = true
+                } else {
+                    log("transition: ${entry.name} (${uuid.take(8)}) inv → inv from=scan:uuid (noop)")
                 }
                 foundUUIDs.add(uuid)
             } else if (uuid != null) {
@@ -1038,6 +1060,7 @@ object WTFClient : ClientModInitializer {
                 match.dim = level.dimension().identifier().toString()
                 match.last_update_time = System.currentTimeMillis().toString()
                 match.from = "scan:transit_match"
+                match.contentHash = hash
                 foundUUIDs.add(match.uuid)
                 transitOrder.remove(match.uuid)
                 changed = true
@@ -1061,6 +1084,7 @@ object WTFClient : ClientModInitializer {
                 match.dim = level.dimension().identifier().toString()
                 match.last_update_time = System.currentTimeMillis().toString()
                 match.from = "scan:hash_match"
+                match.contentHash = hash
                 foundUUIDs.add(uuid)
                 transitOrder.remove(uuid)
                 changed = true
@@ -1082,6 +1106,7 @@ object WTFClient : ClientModInitializer {
                     nameMatch.dim = level.dimension().identifier().toString()
                     nameMatch.last_update_time = System.currentTimeMillis().toString()
                     nameMatch.from = "scan:name_match"
+                    nameMatch.contentHash = hash
                     foundUUIDs.add(nameMatch.uuid)
                     transitOrder.remove(nameMatch.uuid)
                     changed = true
@@ -1096,7 +1121,7 @@ object WTFClient : ClientModInitializer {
                 }
 
                 if (recoveryMatch != null) {
-                    log("scan: recovered ${ss.second} from ex-inv UUID ${recoveryMatch.uuid} (hash=${hash.take(8)})")
+                    log("transition: ${recoveryMatch.name} (${recoveryMatch.uuid.take(8)}) ex-inv → inv from=scan:ex_inv_recovery lastKnown=${recoveryMatch.lastKnown}")
                     injectItemUUID(ss.first, recoveryMatch.uuid)
                     recoveryMatch.state = "inv"
                     recoveryMatch.entity_id = ""
@@ -1136,7 +1161,7 @@ object WTFClient : ClientModInitializer {
         for (entry in trackedShulkers.values) {
             if (entry.state == "inv" && entry.uuid !in foundUUIDs) {
                 entry.state = "ex-inv"
-                log("scan: ${entry.uuid} (${entry.name}) left inventory → ex-inv")
+                log("transition: ${entry.name} (${entry.uuid.take(8)}) inv → ex-inv from=scan:cleanup lastKnown=${entry.lastKnown}")
             }
         }
 
@@ -1226,7 +1251,7 @@ object WTFClient : ClientModInitializer {
             if (entry.happy) notify("§aplaced§f → §eblock§f §7(${entry.name})§f")
         }
         
-        log("shulker placed: trackedShulkers updated ($coordStr, name=$displayName, uuid=$finalUUID, from_slot=$locKey)")
+        log("transition: $displayName (${finalUUID.take(8)}) ${entry?.state ?: "new"} → block from=${if (entry == null) "place:new" else "place:existing"} slot=$locKey")
         save()
     }
 

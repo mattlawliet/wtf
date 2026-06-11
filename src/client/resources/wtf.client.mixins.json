@@ -7,7 +7,8 @@
 		"ExampleClientMixin",
 		"AbstractContainerScreenAccessor",
 		"ShulkerBoxMenuAccessor",
-		"ClientLevelMixin"
+		"ClientLevelMixin",
+		"EntityAccessor"
 	],
 	"injectors": {
 		"defaultRequire": 1
