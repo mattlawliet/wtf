@@ -298,7 +298,7 @@ object WTFClient : ClientModInitializer {
                 entry.type = stackType
 
                 if (oldState != "ex-inv" || oldCoords != coordStr) {
-                    notify("§echest§f ← §a${oldState}§f §7(${entry.name})§f")
+                    if (entry.happy) notify("§echest§f ← §a${oldState}§f §7(${entry.name})§f")
                     log("handleChestClosed: tracked shulker placed/found in chest at $chestLoc, uuid=$uuid from=${entry.from} oldFrom=$oldFrom")
                 }
             }
