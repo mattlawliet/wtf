@@ -448,7 +448,7 @@ object WTFClient : ClientModInitializer {
         return newOrChanged.firstOrNull { (_, stack) ->
             val stackType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
             val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
-            entry.happy && stackType == entry.type && stackName == entry.name
+            entry.happy && stackType == entry.type && stackName == entry.name && fingerprintFromItem(stack) == entry.contentHash
         }
     }
 
