@@ -8,13 +8,16 @@ import net.minecraft.client.input.MouseButtonEvent
 import net.minecraft.network.chat.Component
 import net.minecraft.world.item.ItemStack
 
-class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Component.literal("Happy Shulkers")) {
+class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal("Happy Shulkers")) {
+    private val allEntries = entries.toMutableList()
     private var searchField: EditBox? = null
     private val sections = mutableMapOf<ShulkerSectionType, ShulkerSection>()
     private val previewItemsById = mutableMapOf<String, List<ItemStack>>()
     private var selectedId: String? = null
     private var hoveredId: String? = null
     private var searchQuery = ""
+    private var pendingRemoveId: String? = null
+    private var removeButtonBounds: IntArray? = null
 
     private val leftPanelWidth: Int
         get() = (width * 0.22f).toInt().coerceIn(130, 220)
@@ -103,7 +106,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         super.extractRenderState(graphics, mouseX, mouseY, delta)
 
         renderLeftPanel(graphics, mouseX, mouseY)
-        renderPreviewPanel(graphics)
+        renderPreviewPanel(graphics, mouseX, mouseY)
         renderPreviewGridTooltip(graphics, mouseX, mouseY)
     }
 
@@ -160,7 +163,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         }
     }
 
-    private fun renderPreviewPanel(graphics: GuiGraphicsExtractor) {
+    private fun renderPreviewPanel(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
         val panelY = searchHeight + 5
         val panelHeight = height - panelY - 5
         
@@ -173,6 +176,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         if (selected == null) {
             val hint = Component.literal("Select a shulker")
             graphics.text(font, hint, previewX, panelY + 30, 0xFF808080.toInt(), true)
+            removeButtonBounds = null
             return
         }
 
@@ -254,6 +258,22 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         }
         val statusText = font.plainSubstrByWidth(statusParts.joinToString(" | "), previewWidth)
         graphics.text(font, Component.literal(statusText), previewX, nameY + 24, 0xFFFFFF00.toInt(), false)
+
+        // Remove record button - second click confirms
+        val btnX = previewX
+        val btnY = nameY + 38
+        val btnLabel = if (pendingRemoveId == selected.id) "Click again to confirm removal" else "Remove record"
+        val btnWidth = font.width(btnLabel) + 10
+        val btnHeight = 14
+        removeButtonBounds = intArrayOf(btnX, btnY, btnX + btnWidth, btnY + btnHeight)
+        val isHovered = mouseX in btnX..(btnX + btnWidth) && mouseY in btnY..(btnY + btnHeight)
+        val bgColor = if (pendingRemoveId == selected.id) {
+            if (isHovered) 0xFFCC2222.toInt() else 0xFF992222.toInt()
+        } else {
+            if (isHovered) 0xFF4A4A4A.toInt() else 0xFF3A3A3A.toInt()
+        }
+        graphics.fill(btnX, btnY, btnX + btnWidth, btnY + btnHeight, bgColor)
+        graphics.text(font, Component.literal(btnLabel), btnX + 5, btnY + 3, 0xFFFFFFFF.toInt(), false)
     }
 
     private fun compactLocation(location: String): String {
@@ -301,6 +321,27 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
         val mouseY = mouseButtonEvent.y
         val button = mouseButtonEvent.button()
         
+        if (button == 0 && mouseX >= leftPanelWidth) {
+            val bounds = removeButtonBounds
+            val selected = allEntries.find { it.id == selectedId }
+            if (bounds != null && selected != null &&
+                mouseX >= bounds[0] && mouseX < bounds[2] && mouseY >= bounds[1] && mouseY < bounds[3]
+            ) {
+                if (pendingRemoveId == selected.id) {
+                    WTFClient.removeTrackedShulker(selected.id)
+                    allEntries.removeAll { it.id == selected.id }
+                    previewItemsById.remove(selected.id)
+                    pendingRemoveId = null
+                    selectedId = null
+                    removeButtonBounds = null
+                    rebuildSections(searchQuery)
+                } else {
+                    pendingRemoveId = selected.id
+                }
+                return true
+            }
+        }
+
         if (button == 0 && mouseX < leftPanelWidth) {
             val panelY = searchHeight + 5
             var currentY = panelY
@@ -321,6 +362,7 @@ class ShulkerGridScreen(private val allEntries: List<ShulkerEntry>) : Screen(Com
                         val entry = section.getEntryAtPosition(localY)
                         if (entry != null) {
                             selectedId = entry.id
+                            pendingRemoveId = null
                             return true
                         }
                     }

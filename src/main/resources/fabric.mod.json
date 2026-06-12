@@ -3,9 +3,9 @@
 	"id": "wtf",
 	"version": "${version}",
 	"name": "WTF",
-	"description": "This is an example description! Tell everyone what your mod is about!",
+	"description": "Tracks where you stashed your stuff across chests and shulker boxes, so you never wonder \"wtf did I put this\" again.",
 	"authors": [
-		"Me!"
+		"Matt"
 	],
 	"contact": {
 		"homepage": "https://fabricmc.net/",
