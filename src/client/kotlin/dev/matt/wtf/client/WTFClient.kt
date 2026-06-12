@@ -873,6 +873,10 @@ object WTFClient : ClientModInitializer {
                                         continue
                                     }
                                 }
+                                // Block break was just detected and is awaiting
+                                // resolution to "item" via pendingItemEntities -
+                                // don't race ahead and stale-clear it here.
+                                if (!stillExists && shulker.state == "block" && pendingItemEntities.any { it.uuid == shulker.uuid }) continue
                                 if (!stillExists) {
                                     log("tick verify: block at ${shulker.coords} is now $blockId (was expected to hold shulker ${shulker.name}). Marking as last-known.")
                                     shulker.lastLocation = "${shulker.dim}:${shulker.coords}"
