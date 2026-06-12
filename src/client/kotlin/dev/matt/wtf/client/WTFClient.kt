@@ -1460,7 +1460,17 @@ object WTFClient : ClientModInitializer {
             val bType = BuiltInRegistries.BLOCK.getKey(player.level().getBlockState(pos).block).toString()
             fingerprintContainer(be, bType, be.components().get(DataComponents.CUSTOM_NAME))
         } else hash
-        val cachedNbt = if (be != null) serializeContainerToNbt(be) else serializeShulkerContents(stack)
+        // The placed stack's CONTAINER component is always accurate at this
+        // instant; the block entity may not have its contents synced yet
+        // right after placement, which would otherwise overwrite the cache
+        // with an empty preview until the box is opened.
+        val stackContainer = stack.get(DataComponents.CONTAINER)
+        val stackHasItems = stackContainer != null && stackContainer.nonEmptyItems().iterator().hasNext()
+        val cachedNbt = if (stackHasItems || be == null) {
+            serializeShulkerContents(stack)
+        } else {
+            serializeContainerToNbt(be)
+        }
         
         val displayName = if (stack.has(DataComponents.CUSTOM_NAME)) stack.get(DataComponents.CUSTOM_NAME)?.string ?: "???" else entry?.name ?: "Shulker Box"
         
