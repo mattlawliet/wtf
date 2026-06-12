@@ -1466,11 +1466,16 @@ object WTFClient : ClientModInitializer {
         // with an empty preview until the box is opened.
         val stackContainer = stack.get(DataComponents.CONTAINER)
         val stackHasItems = stackContainer != null && stackContainer.nonEmptyItems().iterator().hasNext()
-        val cachedNbt = if (stackHasItems || be == null) {
+        val freshNbt = if (stackHasItems || be == null) {
             serializeShulkerContents(stack)
         } else {
             serializeContainerToNbt(be)
         }
+        // Don't blank a known-good preview on placement: only adopt the
+        // freshly-serialized contents if they actually contain items, since
+        // the box's real contents are only confirmed by opening it.
+        val freshHasItems = freshNbt != null && deserializeNbtToItems(freshNbt).any { !it.isEmpty }
+        val cachedNbt = if (freshHasItems) freshNbt else entry?.cachedContents ?: freshNbt
         
         val displayName = if (stack.has(DataComponents.CUSTOM_NAME)) stack.get(DataComponents.CUSTOM_NAME)?.string ?: "???" else entry?.name ?: "Shulker Box"
         
