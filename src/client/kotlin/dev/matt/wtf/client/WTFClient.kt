@@ -624,7 +624,7 @@ object WTFClient : ClientModInitializer {
                 .toMutableSet()
             while (iterator.hasNext()) {
                 val pending = iterator.next()
-                if (tickCounter - pending.tick > 20) {
+                if (tickCounter - pending.tick > 60) {
                     iterator.remove()
                     continue
                 }
@@ -662,7 +662,7 @@ object WTFClient : ClientModInitializer {
                 val readyEntities = mutableListOf<ItemEntity>()
                 while (dropIterator.hasNext()) {
                     val (entityId, spawnTick) = dropIterator.next()
-                    if (tickCounter - spawnTick > 20) {
+                    if (tickCounter - spawnTick > 60) {
                         dropIterator.remove()
                         continue
                     }
