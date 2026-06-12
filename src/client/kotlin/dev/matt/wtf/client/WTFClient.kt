@@ -659,7 +659,7 @@ object WTFClient : ClientModInitializer {
             // synced when ENTITY_LOAD fired, so retry for a few ticks.
             run {
                 val dropIterator = pendingDropEntities.iterator()
-                val readyEntities = mutableListOf<ItemEntity>()
+                val readyEntities = mutableListOf<Pair<ItemEntity, Int>>()
                 while (dropIterator.hasNext()) {
                     val (entityId, spawnTick) = dropIterator.next()
                     if (tickCounter - spawnTick > 60) {
@@ -669,7 +669,7 @@ object WTFClient : ClientModInitializer {
                     val entity = level.getEntity(entityId) as? ItemEntity ?: continue
                     if (!isShulkerItem(entity.item)) continue
                     dropIterator.remove()
-                    readyEntities.add(entity)
+                    readyEntities.add(entity to spawnTick)
                 }
 
                 if (readyEntities.isNotEmpty()) {
@@ -689,8 +689,9 @@ object WTFClient : ClientModInitializer {
 
                     // Pass 1: identity match via wtf:uuid (survives if uuid is still
                     // present in CUSTOM_DATA on the dropped stack).
-                    val unmatched = mutableListOf<ItemEntity>()
-                    for (entity in readyEntities) {
+                    val unmatched = mutableListOf<Pair<ItemEntity, Int>>()
+                    for (re in readyEntities) {
+                        val entity = re.first
                         val itemUUID = getItemUUID(entity.item)
                         val match = itemUUID?.let { trackedShulkers[it] }
                             ?.takeIf { matchableState(it, entity) && it.uuid !in claimedUUIDs }
@@ -699,7 +700,7 @@ object WTFClient : ClientModInitializer {
                             applyDropMatch(match, entity, level)
                             anyMatched = true
                         } else {
-                            unmatched.add(entity)
+                            unmatched.add(re)
                         }
                     }
 
@@ -708,10 +709,17 @@ object WTFClient : ClientModInitializer {
                     // box's hash is shared by every box of that color (tracked or
                     // not), so it's never used to match - that's what let untracked
                     // Y steal a tracked entry's identity before.
-                    for (entity in unmatched) {
-                        val hash = fingerprintFromItem(entity.item) ?: continue
+                    for (re in unmatched) {
+                        val entity = re.first
+                        // CONTAINER/CUSTOM_NAME components may not have synced yet at
+                        // this exact tick - if the hash is unusable, requeue and retry
+                        // on a later tick rather than giving up permanently.
+                        val hash = fingerprintFromItem(entity.item)
                         val itemId = BuiltInRegistries.ITEM.getKey(entity.item.item).toString()
-                        if (hash == genericEmptyHash(itemId)) continue
+                        if (hash == null || hash == genericEmptyHash(itemId)) {
+                            pendingDropEntities.add(entity.id to re.second)
+                            continue
+                        }
                         val match = trackedShulkers.values.singleOrNull {
                             matchableState(it, entity) && it.uuid !in claimedUUIDs && it.contentHash == hash
                         }
@@ -719,6 +727,8 @@ object WTFClient : ClientModInitializer {
                             claimedUUIDs.add(match.uuid)
                             applyDropMatch(match, entity, level)
                             anyMatched = true
+                        } else {
+                            pendingDropEntities.add(entity.id to re.second)
                         }
                     }
 
