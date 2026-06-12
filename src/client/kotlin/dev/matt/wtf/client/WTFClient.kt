@@ -1275,7 +1275,9 @@ object WTFClient : ClientModInitializer {
                     val ageMs = System.currentTimeMillis() - (candidate.last_update_time.toLongOrNull() ?: 0L)
                     if ((candidate.from != "entity_removed" && candidate.from != "vanish:pickup") || ageMs > 10_000) return@mapIndexedNotNull null
                     if (candidate.type != stackType) return@mapIndexedNotNull null
-                    if (candidate.name != stackName && candidate.name.isNotEmpty()) return@mapIndexedNotNull null
+                    // Pickup can momentarily strip CUSTOM_NAME via server sync, leaving
+                    // stackName == "???" - don't let that disqualify the real candidate.
+                    if (stackName != "???" && candidate.name != stackName && candidate.name.isNotEmpty()) return@mapIndexedNotNull null
 
                     val candidateCoords = parseVec3(candidate.coords)
                     val distSq = if (candidateCoords != null) {
