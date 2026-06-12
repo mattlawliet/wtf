@@ -13,6 +13,9 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private var searchField: EditBox? = null
     private val sections = mutableMapOf<ShulkerSectionType, ShulkerSection>()
     private val previewItemsById = mutableMapOf<String, List<ItemStack>>()
+    // Lowercased item display names per entry, computed once — building display
+    // names is too costly to redo on every search keystroke.
+    private val searchNamesById = mutableMapOf<String, List<String>>()
     private var selectedId: String? = null
     private var hoveredId: String? = null
     private var searchQuery = ""
@@ -41,7 +44,6 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
 
     private fun rebuildSections(query: String) {
         sections.clear()
-        previewItemsById.clear()
 
         val blockEntries = mutableListOf<ShulkerListRow>()
         val invEntries = mutableListOf<ShulkerListRow>()
@@ -64,11 +66,17 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
                 ShulkerSectionType.EXTERNAL_INV -> exInvEntries
             }
 
-            val items = entry.items.takeIf { it.size == 27 }
-                ?: entry.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems)
-                ?: List(27) { ItemStack.EMPTY }
-            previewItemsById[entry.id] = items
-            val matchPercent = if (query.isEmpty()) 1f else fuzzyMatchPercent(query, entry.name.string, items)
+            val items = previewItemsById.getOrPut(entry.id) {
+                entry.items.takeIf { it.size == 27 }
+                    ?: entry.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems)
+                    ?: List(27) { ItemStack.EMPTY }
+            }
+            val matchPercent = if (query.isEmpty()) 1f else {
+                val itemNames = searchNamesById.getOrPut(entry.id) {
+                    items.mapNotNull { if (it.isEmpty) null else it.displayName.string.lowercase() }
+                }
+                fuzzyMatchPercent(query, entry.name.string, itemNames)
+            }
             if (matchPercent > 0f || query.isEmpty()) {
                 rows.add(ShulkerListRow(
                     id = entry.id,
@@ -331,6 +339,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
                     WTFClient.removeTrackedShulker(selected.id)
                     allEntries.removeAll { it.id == selected.id }
                     previewItemsById.remove(selected.id)
+                    searchNamesById.remove(selected.id)
                     pendingRemoveId = null
                     selectedId = null
                     removeButtonBounds = null
@@ -392,39 +401,21 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount)
     }
 
-    private fun findMatchingItemIndices(query: String, items: List<ItemStack>): Set<Int> {
-        val indices = mutableSetOf<Int>()
-        for (i in items.indices) {
-            val item = items[i]
-            if (!item.isEmpty) {
-                val itemName = item.displayName.string
-                if (fuzzyMatch(query, itemName)) {
-                    indices.add(i)
-                }
-            }
-        }
-        return indices
-    }
-
-    private fun fuzzyMatchPercent(query: String, name: String, items: List<ItemStack>): Float {
+    private fun fuzzyMatchPercent(query: String, name: String, itemNames: List<String>): Float {
         if (query.isEmpty()) return 1f
 
-        val nameMatch = fuzzyMatchScore(query, name)
-        var itemMatch = 0f
-        for (item in items) {
-            if (!item.isEmpty) {
-                val score = fuzzyMatchScore(query, item.displayName.string)
-                if (score > itemMatch) itemMatch = score
-            }
-        }
-
-        return maxOf(nameMatch, itemMatch)
-    }
-
-    private fun fuzzyMatchScore(query: String, text: String): Float {
-        if (query.isEmpty()) return 1f
         val q = query.lowercase()
-        val t = text.lowercase()
+        var best = fuzzyMatchScore(q, name.lowercase())
+        for (itemName in itemNames) {
+            val score = fuzzyMatchScore(q, itemName)
+            if (score > best) best = score
+        }
+        return best
+    }
+
+    // Both arguments must already be lowercased.
+    private fun fuzzyMatchScore(q: String, t: String): Float {
+        if (q.isEmpty()) return 1f
         if (t.contains(q)) return 1f
 
         var qi = 0

@@ -615,6 +615,7 @@ object WTFClient : ClientModInitializer {
             tickCounter++
 
             // 1. Handle pending item entities (block -> item)
+            if (pendingItemEntities.isNotEmpty()) {
             val iterator = pendingItemEntities.iterator()
             val claimedEntityIds = trackedShulkers.values
                 .asSequence()
@@ -651,6 +652,7 @@ object WTFClient : ClientModInitializer {
                     }
                     iterator.remove()
                 }
+            }
             }
 
             // 1b. Handle pending drop entities (Q-drop): item data may not have
@@ -787,7 +789,11 @@ object WTFClient : ClientModInitializer {
                     vanishChanged = true
                 }
                 if (vanishChanged) save()
-                prevInvShulkerCount = countInvShulkers(player)
+                // Baseline only matters while an entry is in "item" state — skip
+                // the full inventory sweep otherwise.
+                if (trackedShulkers.values.any { it.state == "item" }) {
+                    prevInvShulkerCount = countInvShulkers(player)
+                }
             }
 
             // 3. Periodically verify blocks in loaded chunks to avoid stale position data.
@@ -1552,9 +1558,15 @@ object WTFClient : ClientModInitializer {
         return if (blockId.contains("shulker_box")) pos else null
     }
 
+    // Memoized per Item: registry key lookup + string alloc is too hot for
+    // the per-slot per-tick call sites, and an Item's key never changes.
+    private val shulkerItemCache = java.util.IdentityHashMap<net.minecraft.world.item.Item, Boolean>()
+
     private fun isShulkerItem(stack: ItemStack): Boolean {
-        val id = BuiltInRegistries.ITEM.getKey(stack.item).toString()
-        return id.contains("shulker_box")
+        if (stack.isEmpty) return false
+        return shulkerItemCache.getOrPut(stack.item) {
+            BuiltInRegistries.ITEM.getKey(stack.item).toString().contains("shulker_box")
+        }
     }
 
     private fun fingerprintItems(shulkerId: String, customName: String, items: NonNullList<ItemStack>): String {
