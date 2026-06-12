@@ -71,7 +71,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
                     ?: entry.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems)
                     ?: List(27) { ItemStack.EMPTY }
             }
-            val matchPercent = if (query.isEmpty()) 1f else {
+            val matchPercent = if (query.isEmpty()) 0f else {
                 val itemNames = searchNamesById.getOrPut(entry.id) {
                     items.mapNotNull { if (it.isEmpty) null else it.displayName.string.lowercase() }
                 }
@@ -88,6 +88,15 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
                     location = entry.location
                 ))
             }
+        }
+
+        if (query.isNotEmpty()) {
+            val byMatchThenName = compareByDescending<ShulkerListRow> { it.matchPercent }
+                .thenBy { it.name.string.lowercase() }
+            blockEntries.sortWith(byMatchThenName)
+            invEntries.sortWith(byMatchThenName)
+            itemEntries.sortWith(byMatchThenName)
+            exInvEntries.sortWith(byMatchThenName)
         }
 
         if (blockEntries.isNotEmpty()) {
@@ -402,8 +411,6 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     }
 
     private fun fuzzyMatchPercent(query: String, name: String, itemNames: List<String>): Float {
-        if (query.isEmpty()) return 1f
-
         val q = query.lowercase()
         var best = fuzzyMatchScore(q, name.lowercase())
         for (itemName in itemNames) {
