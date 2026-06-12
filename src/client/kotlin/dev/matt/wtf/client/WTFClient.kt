@@ -1334,7 +1334,9 @@ object WTFClient : ClientModInitializer {
                         it.happy &&
                         (it.state == "inv" || it.state == "item") &&
                         it.type == stackType &&
-                        it.name == stackName
+                        // "???" means CUSTOM_NAME was stripped by sync (e.g. cursor
+                        // drag) - don't let that disqualify the real entry.
+                        (it.name == stackName || stackName == "???")
                 }
 
                 if (nameMatch != null) {
