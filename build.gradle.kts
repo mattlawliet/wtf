@@ -81,6 +81,33 @@ tasks.jar {
 	}
 }
 
+// Debug variant: same build, plus a /wtf_debug.flag marker resource that
+// makes WTFClient default debugMode = true (see WTFClient.kt). Produces
+// "<name>-<version>_debug.jar" alongside the normal jar.
+val debugMarkerDir = layout.buildDirectory.dir("wtf-debug-marker")
+
+val generateDebugMarker = tasks.register("generateDebugMarker") {
+	outputs.dir(debugMarkerDir)
+	doLast {
+		val dir = debugMarkerDir.get().asFile
+		dir.mkdirs()
+		File(dir, "wtf_debug.flag").writeText("1")
+	}
+}
+
+val debugJar = tasks.register<Jar>("debugJar") {
+	group = "build"
+	dependsOn("jar", generateDebugMarker)
+	from(zipTree({ tasks.named("jar").get().outputs.files.singleFile }))
+	from(debugMarkerDir)
+	archiveFileName.set("${project.name}-${version}_debug.jar")
+	destinationDirectory.set(layout.buildDirectory.dir("libs"))
+}
+
+tasks.named("build") {
+	dependsOn(debugJar)
+}
+
 // configure the maven publication
 publishing {
 	publications {

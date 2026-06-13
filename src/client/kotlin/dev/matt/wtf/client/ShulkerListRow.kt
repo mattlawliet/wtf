@@ -35,6 +35,7 @@ class ShulkerListRow(
             ShulkerSectionType.INVENTORY -> 0xFF55FF55.toInt()
             ShulkerSectionType.ITEM -> 0xFFFFAA55.toInt()
             ShulkerSectionType.EXTERNAL_INV -> 0xFF55FFFF.toInt()
+            ShulkerSectionType.ENDERCHEST -> 0xFFAA55FF.toInt()
         }
 
         graphics.item(stack, x + 2, y + (BASE_ROW_HEIGHT - SLOT_SIZE) / 2)
@@ -70,5 +71,6 @@ enum class ShulkerSectionType {
     BLOCK,
     INVENTORY,
     ITEM,
-    EXTERNAL_INV
+    EXTERNAL_INV,
+    ENDERCHEST
 }

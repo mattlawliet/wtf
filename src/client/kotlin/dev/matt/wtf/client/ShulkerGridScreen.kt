@@ -6,6 +6,7 @@ import net.minecraft.client.gui.components.EditBox
 import net.minecraft.client.gui.screens.Screen
 import net.minecraft.client.input.MouseButtonEvent
 import net.minecraft.network.chat.Component
+import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.world.item.ItemStack
 
 class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal("Happy Shulkers")) {
@@ -49,6 +50,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         val invEntries = mutableListOf<ShulkerListRow>()
         val itemEntries = mutableListOf<ShulkerListRow>()
         val exInvEntries = mutableListOf<ShulkerListRow>()
+        val enderChestEntries = mutableListOf<ShulkerListRow>()
 
         for (entry in allEntries) {
             val sectionType = when (entry.section) {
@@ -56,6 +58,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
                 "inv" -> ShulkerSectionType.INVENTORY
                 "item" -> ShulkerSectionType.ITEM
                 "ex-inv" -> ShulkerSectionType.EXTERNAL_INV
+                "enderchest" -> ShulkerSectionType.ENDERCHEST
                 else -> continue
             }
 
@@ -64,6 +67,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
                 ShulkerSectionType.INVENTORY -> invEntries
                 ShulkerSectionType.ITEM -> itemEntries
                 ShulkerSectionType.EXTERNAL_INV -> exInvEntries
+                ShulkerSectionType.ENDERCHEST -> enderChestEntries
             }
 
             val items = previewItemsById.getOrPut(entry.id) {
@@ -73,7 +77,12 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             }
             val matchPercent = if (query.isEmpty()) 0f else {
                 val itemNames = searchNamesById.getOrPut(entry.id) {
-                    items.mapNotNull { if (it.isEmpty) null else it.displayName.string.lowercase() }
+                    items.mapNotNull {
+                        if (it.isEmpty) null else {
+                            val id = BuiltInRegistries.ITEM.getKey(it.item).toString()
+                            "${it.displayName.string.lowercase()} $id ${id.removePrefix("minecraft:")}"
+                        }
+                    }
                 }
                 fuzzyMatchPercent(query, entry.name.string, itemNames)
             }
@@ -97,6 +106,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             invEntries.sortWith(byMatchThenName)
             itemEntries.sortWith(byMatchThenName)
             exInvEntries.sortWith(byMatchThenName)
+            enderChestEntries.sortWith(byMatchThenName)
         }
 
         if (blockEntries.isNotEmpty()) {
@@ -110,6 +120,9 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         }
         if (exInvEntries.isNotEmpty()) {
             sections[ShulkerSectionType.EXTERNAL_INV] = ShulkerSection(ShulkerSectionType.EXTERNAL_INV, exInvEntries)
+        }
+        if (enderChestEntries.isNotEmpty()) {
+            sections[ShulkerSectionType.ENDERCHEST] = ShulkerSection(ShulkerSectionType.ENDERCHEST, enderChestEntries)
         }
 
         if (selectedId == null && sections.values.any { it.entries.isNotEmpty() }) {

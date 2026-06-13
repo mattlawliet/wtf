@@ -102,7 +102,7 @@ object WTFClient : ClientModInitializer {
     private val trackedShulkers = HashMap<String, ShulkerState>()
     private var currentWorldId: String? = null
     private var nextSerial = 1
-    private var debugMode = true
+    private var debugMode = false
     private var debugVerbose = false
     private var logWriter: PrintWriter? = null
     private var logBytesWritten = 0
@@ -197,16 +197,57 @@ object WTFClient : ClientModInitializer {
         match.from = "spawn:drop"
         log("transition: ${match.name} (${match.uuid.take(8)}) $oldState → item from=spawn:drop")
         if (match.happy) notify("§ainv§f → §7item§f §7(${match.name})§f")
-        (entity as EntityAccessor).invokeSetSharedFlag(6, true)
+        if (match.happy) (entity as EntityAccessor).invokeSetSharedFlag(6, true)
     }
 
-    private fun transferToInv(entry: ShulkerState, from: String) {
+    // Server's ClientboundTakeItemEntityPacket: authoritative "entity was
+    // collected by collector". Fires for player and mob pickup, not hoppers -
+    // so a take packet aimed at our player is proof of pickup, no inventory
+    // count heuristics needed.
+    fun onTakeItemEntity(itemEntityId: Int, collectorId: Int) {
+        val mc = Minecraft.getInstance()
+        // Packet handlers run once on the network thread before being
+        // rescheduled onto the main thread - only act on the main-thread pass.
+        if (!mc.isSameThread) return
+        val player = mc.player ?: return
+        if (collectorId != player.id) return
+
+        // Entity dropped and re-picked before drop matching claimed it: just
+        // forget the pending drop, the entry never left "inv".
+        pendingDropEntities.removeAll { it.first == itemEntityId }
+
+        val eidStr = itemEntityId.toString()
+        val entry = trackedShulkers.values.find { it.entity_id == eidStr && it.state == "item" }
+        if (entry != null) {
+            itemVanishTicks.remove(entry.uuid)
+            itemVanishInvCount.remove(entry.uuid)
+            dropExpectations.removeAll { it.uuid == entry.uuid }
+            log("take_packet: ${entry.name} (${entry.uuid.take(8)}) collected by player")
+            transferToInv(entry, "pickup:take_packet", authoritative = true)
+            return
+        }
+
+        // Race: picked up before the tick handler bound the entity to a
+        // pendingItemEntities block break. Resolve by proximity, same as the
+        // onEntityRemoved fallback.
+        val entity = mc.level?.getEntity(itemEntityId) as? ItemEntity ?: return
+        if (!isShulkerItem(entity.item)) return
+        val pending = pendingItemEntities.firstOrNull { p ->
+            entity.distanceToSqr(p.pos.x + 0.5, p.pos.y + 0.5, p.pos.z + 0.5) < 16.0
+        } ?: return
+        val pendingEntry = trackedShulkers[pending.uuid] ?: return
+        pendingItemEntities.remove(pending)
+        log("take_packet: pending block ${pendingEntry.name} (${pendingEntry.uuid.take(8)}) collected by player")
+        transferToInv(pendingEntry, "pickup:take_packet:pending", authoritative = true)
+    }
+
+    private fun transferToInv(entry: ShulkerState, from: String, authoritative: Boolean = false) {
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
         val coords = entry.coords.split(",").mapNotNull { it.toDoubleOrNull() }
-        if (coords.size == 3) {
-            val distSq = player.distanceToSqr(coords[0], coords[1], coords[2])
-            if (distSq < 64.0) {
+        if (authoritative || coords.size == 3) {
+            val distSq = if (coords.size == 3) player.distanceToSqr(coords[0], coords[1], coords[2]) else 0.0
+            if (authoritative || distSq < 64.0) {
                 entry.state = "inv"
                 entry.entity_id = ""
                 entry.last_update_time = System.currentTimeMillis().toString()
@@ -236,9 +277,18 @@ object WTFClient : ClientModInitializer {
     private var scanQueued: Boolean = false
     private var throttleTicks: Int = 0
     private val THROTTLE_WINDOW = 5
+    // Just after world join, the inventory may not be fully synced yet -
+    // running the first scan too early sees an empty/partial inventory and
+    // demotes still-held "inv" entries to "ex-inv" (pass 4 cleanup). Hold
+    // off the first post-join scan for 40 ticks (2s) to let it sync.
+    private var postJoinGraceTicks: Int = 0
 
 
     private var openChestPos: BlockPos? = null
+    // Ender chest is a per-player inventory, not a place - contents are
+    // identical regardless of which physical ender chest was opened. Tracked
+    // with state="enderchest" (own section), dim/coords unused/empty.
+    private var openChestIsEnderChest: Boolean = false
     private var openChestInvSnapshot: MutableMap<String, InventorySnapshotEntry>? = null
 
     data class InventorySnapshotEntry(
@@ -246,6 +296,142 @@ object WTFClient : ClientModInitializer {
         val locKey: String,
         val stack: ItemStack
     )
+
+    // --- Click-transition ledger ---------------------------------------
+    // Identity by slot continuity: server-authoritative stack data can't be
+    // trusted to keep wtf:uuid alive across resyncs, but every movement of a
+    // stack inside a menu goes through clicked(). Shulker boxes never stack,
+    // so each click moves whole stacks - a before/after diff of shulker slots
+    // deterministically tracks which tracked box sits where. The ledger maps
+    // menu position ("s<slotIndex>" or "cursor") -> tracked uuid and is
+    // consulted before hash/name heuristics, which only see continuity loss.
+    // --- Drop expectations ----------------------------------------------
+    // When the local player intentionally drops a tracked box (Q-key or a
+    // throw click in a menu), we know which entry left the inventory before
+    // the item entity even spawns. The spawn handler consumes these FIFO,
+    // binding identity without content-hash guessing (whose components may
+    // not have synced yet on the spawn tick).
+    // The expectation records the stack's fingerprint at drop time (the local
+    // stack is fully known pre-drop) - the spawn handler only binds an entity
+    // whose synced hash equals it. Type alone is too loose: breaking an
+    // unrelated box of the same color nearby would steal the expectation.
+    data class DropExpectation(val uuid: String, val type: String, val hash: String, val timeMs: Long)
+    private val dropExpectations = ArrayDeque<DropExpectation>()
+    private val DROP_EXPECTATION_TTL_MS = 5000L
+
+    private fun registerDropExpectation(uuid: String, stack: ItemStack, source: String) {
+        if (trackedShulkers[uuid] == null) return
+        val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+        val hash = fingerprintFromItem(stack) ?: return
+        dropExpectations.addLast(DropExpectation(uuid, type, hash, System.currentTimeMillis()))
+        log("drop expect: ${uuid.take(8)} type=$type hash=${hash.take(8)} from=$source")
+    }
+
+    private fun pruneDropExpectations() {
+        val now = System.currentTimeMillis()
+        dropExpectations.removeAll { now - it.timeMs > DROP_EXPECTATION_TTL_MS }
+    }
+
+    // Called from LocalPlayerMixin at the head of LocalPlayer.drop(boolean),
+    // before the stack leaves the selected hotbar slot.
+    fun onLocalDrop(selected: ItemStack) {
+        if (selected.isEmpty || !isShulkerItem(selected)) return
+        val uuid = getItemUUID(selected)?.takeIf { it in trackedShulkers } ?: return
+        registerDropExpectation(uuid, selected, "q_drop")
+    }
+
+    private var ledgerMenuId: Int = Int.MIN_VALUE
+    private val slotLedger = mutableMapOf<String, String>()
+    private var clickPreSnapshot: MutableMap<String, ItemStack>? = null
+
+    private fun ledgerPosKey(slotIndex: Int) = "s$slotIndex"
+
+    private fun captureMenuShulkers(menu: net.minecraft.world.inventory.AbstractContainerMenu, copy: Boolean): MutableMap<String, ItemStack> {
+        val snap = mutableMapOf<String, ItemStack>()
+        for (slot in menu.slots) {
+            val s = slot.item
+            if (!s.isEmpty && isShulkerItem(s)) snap[ledgerPosKey(slot.index)] = if (copy) s.copy() else s
+        }
+        val carried = menu.carried
+        if (!carried.isEmpty && isShulkerItem(carried)) snap["cursor"] = if (copy) carried.copy() else carried
+        return snap
+    }
+
+    private fun seedLedger(menu: net.minecraft.world.inventory.AbstractContainerMenu) {
+        slotLedger.clear()
+        ledgerMenuId = menu.containerId
+        val claimed = mutableSetOf<String>()
+        for ((pos, stack) in captureMenuShulkers(menu, copy = false)) {
+            val uuid = getItemUUID(stack)?.takeIf { it in trackedShulkers && it !in claimed } ?: continue
+            slotLedger[pos] = uuid
+            claimed.add(uuid)
+        }
+        log("ledger: seeded ${slotLedger.size} entries for menu ${menu.containerId}")
+    }
+
+    fun onMenuClickPre(menu: net.minecraft.world.inventory.AbstractContainerMenu) {
+        if (Minecraft.getInstance().player == null) return
+        if (menu.containerId != ledgerMenuId) seedLedger(menu)
+        clickPreSnapshot = captureMenuShulkers(menu, copy = true)
+    }
+
+    fun onMenuClickPost(menu: net.minecraft.world.inventory.AbstractContainerMenu) {
+        val pre = clickPreSnapshot ?: return
+        clickPreSnapshot = null
+        if (menu.containerId != ledgerMenuId) return
+        val post = captureMenuShulkers(menu, copy = false)
+
+        fun sameStack(a: ItemStack, b: ItemStack) =
+            ItemStack.hashItemAndComponents(a) == ItemStack.hashItemAndComponents(b)
+
+        // Positions whose ledger-tracked shulker left, and positions that
+        // gained a (new or different) shulker stack this click.
+        val lost = pre.filterKeys { it in slotLedger }
+            .filter { (k, old) -> post[k]?.let { !sameStack(old, it) } ?: true }
+        val gained = post.filter { (k, now) -> pre[k]?.let { !sameStack(it, now) } ?: true }.toMutableMap()
+
+        for ((fromPos, oldStack) in lost) {
+            val uuid = slotLedger[fromPos] ?: continue
+            // 1. uuid stamp survived the move
+            var toPos = gained.entries.firstOrNull { getItemUUID(it.value) == uuid }?.key
+            // 2. exact same stack landed elsewhere
+            if (toPos == null) toPos = gained.entries.firstOrNull { sameStack(oldStack, it.value) }?.key
+            // 3. single source, single destination
+            if (toPos == null && lost.size == 1 && gained.size == 1) toPos = gained.keys.first()
+
+            slotLedger.remove(fromPos)
+            if (toPos != null) {
+                // A swap can move the displaced stack into fromPos - only drop
+                // mappings we are overwriting, not unrelated ones.
+                slotLedger.entries.removeAll { it.key == toPos }
+                slotLedger[toPos] = uuid
+                gained.remove(toPos)
+                // Re-stamp: keeps the uuid fast path alive even after server
+                // resyncs stripped it from the stack.
+                if (getItemUUID(post[toPos]!!) != uuid) injectItemUUID(post[toPos]!!, uuid)
+                log("ledger: $fromPos -> $toPos (${uuid.take(8)})")
+            } else {
+                // Left the menu entirely (thrown out). Register an expectation
+                // so the spawn handler binds the item entity by intent, not by
+                // content hash.
+                log("ledger: $fromPos -> out (${uuid.take(8)})")
+                registerDropExpectation(uuid, oldStack, "menu_throw")
+            }
+        }
+    }
+
+    // Resolve a tracked entry's current menu position via the ledger.
+    private fun ledgerLookup(menu: net.minecraft.world.inventory.AbstractContainerMenu, uuid: String): Pair<String, ItemStack>? {
+        if (menu.containerId != ledgerMenuId) return null
+        val pos = slotLedger.entries.firstOrNull { it.value == uuid }?.key ?: return null
+        if (pos == "cursor") {
+            val carried = menu.carried
+            return if (!carried.isEmpty && isShulkerItem(carried)) pos to carried else null
+        }
+        val idx = pos.removePrefix("s").toIntOrNull() ?: return null
+        val slot = menu.slots.getOrNull(idx) ?: return null
+        return if (!slot.item.isEmpty && isShulkerItem(slot.item)) pos to slot.item else null
+    }
 
     private fun getContainerBlockPos(menu: net.minecraft.world.inventory.AbstractContainerMenu, level: Level): Pair<BlockPos, String>? {
         for (slot in menu.slots) {
@@ -266,6 +452,19 @@ object WTFClient : ClientModInitializer {
 
         openChestPos = null
         val menu = (screen as? net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>)?.menu
+        // Client-side the ender chest menu's container is a plain SimpleContainer
+        // (PlayerEnderChestContainer never reaches the client) - the only signal
+        // available is what block the player was looking at when it opened.
+        openChestIsEnderChest = run {
+            val hr = mc.hitResult
+            if (hr is net.minecraft.world.phys.BlockHitResult) {
+                BuiltInRegistries.BLOCK.getKey(level.getBlockState(hr.blockPos).block).toString() == "minecraft:ender_chest"
+            } else false
+        }
+
+        if (openChestIsEnderChest) {
+            log("handleChestScreen: ender chest")
+        } else {
         if (menu != null) {
             val fromContainer = getContainerBlockPos(menu, level)
             if (fromContainer != null) {
@@ -285,8 +484,39 @@ object WTFClient : ClientModInitializer {
                 }
             }
         }
+        }
 
         openChestInvSnapshot = if (menu != null) captureInventorySnapshot(menu, mc.player) else mutableMapOf()
+
+        if (menu != null) {
+            seedLedger(menu)
+            // One-time heuristic resolve for chest-side stacks without uuid
+            // stamps; from here on clicks keep identities exact.
+            val claimed = slotLedger.values.toMutableSet()
+            val player = mc.player
+            for (slot in menu.slots) {
+                if (player != null && slot.container == player.inventory) continue
+                val stack = slot.item
+                if (stack.isEmpty || !isShulkerItem(stack)) continue
+                val pos = ledgerPosKey(slot.index)
+                if (pos in slotLedger) continue
+                // Strict: unique, non-generic content-hash match only. The
+                // name fallback of resolveTrackedChestStack ignores contents
+                // and would stamp a tracked uuid onto an untracked box that
+                // merely shares a name - permanently stealing its identity.
+                val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+                val hash = fingerprintFromItem(stack) ?: continue
+                if (hash == genericEmptyHash(type)) continue
+                val uuid = trackedShulkers.values.singleOrNull {
+                    it.uuid !in claimed && it.type == type && it.contentHash == hash &&
+                        (it.state == "inv" || it.state == "item" || it.state == "block" || it.state == "ex-inv")
+                }?.uuid ?: continue
+                slotLedger[pos] = uuid
+                claimed.add(uuid)
+                injectItemUUID(stack, uuid)
+                log("ledger: chest seed $pos -> ${uuid.take(8)} (hash)")
+            }
+        }
     }
 
     private fun handleChestClosed(screen: Any) {
@@ -296,13 +526,24 @@ object WTFClient : ClientModInitializer {
 
         val menu = (screen as? net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>)?.menu ?: return
 
-        // Derive block position from the container's block entity (reliable, not hitResult-dependent)
-        val containerInfo = getContainerBlockPos(menu, level)
-        val containerPos = containerInfo?.first ?: openChestPos ?: return
+        val chestLoc: String
+        val coordStr: String
+        val dimStr: String
+        if (openChestIsEnderChest) {
+            chestLoc = "Ender Chest"
+            coordStr = ""
+            dimStr = ""
+        } else {
+            // Derive block position from the container's block entity (reliable, not hitResult-dependent)
+            val containerInfo = getContainerBlockPos(menu, level)
+            val containerPos = containerInfo?.first ?: openChestPos ?: return
+            chestLoc = blockLocation(containerPos, level)
+            coordStr = "${containerPos.x},${containerPos.y},${containerPos.z}"
+            dimStr = level.dimension().identifier().toString()
+        }
 
-        val chestLoc = blockLocation(containerPos, level)
-        val coordStr = "${containerPos.x},${containerPos.y},${containerPos.z}"
-        val dimStr = level.dimension().identifier().toString()
+        val chestState = if (openChestIsEnderChest) "enderchest" else "ex-inv"
+        val notifyTag = if (openChestIsEnderChest) "§dender§f" else "§echest§f"
 
         // 1. Scan all slots in the container to find which shulkers are currently inside
         val shulkersInChest = mutableSetOf<String>()
@@ -315,7 +556,11 @@ object WTFClient : ClientModInitializer {
             val stackHash = fingerprintFromItem(stack) ?: ""
             val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
             val stackType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+            val ledgerUUID = if (menu.containerId == ledgerMenuId) {
+                slotLedger[ledgerPosKey(slot.index)]?.takeIf { it in trackedShulkers && it !in shulkersInChest }
+            } else null
             val matchedUUID = stackUUID?.takeIf { it in trackedShulkers }
+                ?: ledgerUUID
                 ?: resolveTrackedChestStack(stackHash, stackName, stackType, shulkersInChest)
             val uuid = if (matchedUUID != null) {
                 if (stackUUID != matchedUUID) {
@@ -329,7 +574,7 @@ object WTFClient : ClientModInitializer {
                 if (newUuid !in trackedShulkers) {
                     trackedShulkers[newUuid] = ShulkerState(
                         uuid = newUuid,
-                        state = "ex-inv",
+                        state = chestState,
                         dim = dimStr,
                         coords = coordStr,
                         last_update_time = System.currentTimeMillis().toString(),
@@ -353,10 +598,10 @@ object WTFClient : ClientModInitializer {
                 val oldCoords = entry.coords
                 val oldFrom = entry.from
 
-                if (oldCoords != coordStr || entry.dim != dimStr) {
+                if (!openChestIsEnderChest && (oldCoords != coordStr || entry.dim != dimStr)) {
                     entry.lastLocation = "${entry.dim}:${oldCoords}"
                 }
-                entry.state = "ex-inv"
+                entry.state = chestState
                 entry.lastKnown = false
                 entry.entity_id = ""
                 entry.dim = dimStr
@@ -367,9 +612,9 @@ object WTFClient : ClientModInitializer {
                 if (stackHash.isNotEmpty()) entry.contentHash = stackHash
                 entry.type = stackType
 
-                if (oldState != "ex-inv" || oldCoords != coordStr) {
-                    if (entry.happy) notify("§echest§f ← §a${oldState}§f §7(${entry.name})§f")
-                    log("handleChestClosed: tracked shulker placed/found in chest at $chestLoc, uuid=$uuid from=${entry.from} oldFrom=$oldFrom")
+                if (oldState != chestState || oldCoords != coordStr) {
+                    if (entry.happy) notify("$notifyTag ← §a${oldState}§f §7(${entry.name})§f")
+                    log("handleChestClosed: tracked shulker placed/found in $chestLoc, uuid=$uuid from=${entry.from} oldFrom=$oldFrom")
                 }
             }
         }
@@ -378,9 +623,10 @@ object WTFClient : ClientModInitializer {
 
         // If a hopper pulls the shulker out before close, it never appears in the final chest scan.
         // Use the open/close inventory delta to still record the chest as the last known external location.
+        // Ender chests have no hoppers - this whole recovery path is moot there.
         val currentInventoryByUuid = captureInventorySnapshot(menu, player)
         val currentInventoryBySlot = captureInventoryBySlot(menu, player)
-        for ((uuid, snapshot) in openChestInvSnapshot ?: emptyMap()) {
+        for ((uuid, snapshot) in if (openChestIsEnderChest) emptyMap() else (openChestInvSnapshot ?: emptyMap())) {
             if (uuid in shulkersInChest) continue
             val entry = trackedShulkers[uuid] ?: continue
             if (entry.state != "inv") continue
@@ -410,9 +656,9 @@ object WTFClient : ClientModInitializer {
             corrected = true
         }
 
-        // 2. Self-Correction: Find shulkers previously marked in THIS chest that are now MISSING
+        // 2. Self-Correction: Find shulkers previously marked in THIS chest/enderchest that are now MISSING
         for (entry in trackedShulkers.values) {
-            if (entry.state == "ex-inv" && entry.coords == coordStr && entry.dim == dimStr) {
+            if (entry.state == chestState && entry.coords == coordStr && entry.dim == dimStr) {
                 if (entry.uuid !in shulkersInChest) {
                     val invMatch = findInventoryStackForEntry(entry, menu, player)
                     if (invMatch != null) {
@@ -434,7 +680,7 @@ object WTFClient : ClientModInitializer {
                             if (wasLK) notify("§c[LK]§f → §ainv§f §7(${entry.name})§f") else notify("§echest§f → §ainv§f §7(${entry.name})§f")
                         }
                         corrected = true
-                    } else if (!entry.lastKnown) {
+                    } else if (!entry.lastKnown && !openChestIsEnderChest) {
                         log("handleChestClosed self-correction: shulker ${entry.name} (uuid=${entry.uuid}) is no longer in chest at $chestLoc. Marking as external last-known.")
                         entry.lastKnown = true
                         entry.lastLocation = "${entry.dim}:${entry.coords}"
@@ -490,6 +736,23 @@ object WTFClient : ClientModInitializer {
         menu: net.minecraft.world.inventory.AbstractContainerMenu,
         player: Player
     ): Pair<String, ItemStack>? {
+        // Ledger first: slot continuity beats every content heuristic below.
+        if (menu.containerId == ledgerMenuId) {
+            val pos = slotLedger.entries.firstOrNull { it.value == entry.uuid }?.key
+            if (pos == "cursor" && !menu.carried.isEmpty && isShulkerItem(menu.carried)) {
+                return "cursor" to menu.carried
+            }
+            val idx = pos?.removePrefix("s")?.toIntOrNull()
+            if (idx != null) {
+                val slot = menu.slots.getOrNull(idx)
+                if (slot != null && slot.container == player.inventory &&
+                    !slot.item.isEmpty && isShulkerItem(slot.item)
+                ) {
+                    return inventorySlotToKey(slot.index) to slot.item
+                }
+            }
+        }
+
         val snapshot = openChestInvSnapshot ?: emptyMap()
         val candidates = mutableListOf<Pair<String, ItemStack>>()
 
@@ -624,7 +887,7 @@ object WTFClient : ClientModInitializer {
                 .toMutableSet()
             while (iterator.hasNext()) {
                 val pending = iterator.next()
-                if (tickCounter - pending.tick > 60) {
+                if (tickCounter - pending.tick > 200) {
                     iterator.remove()
                     continue
                 }
@@ -648,7 +911,7 @@ object WTFClient : ClientModInitializer {
                         log("block -> item: found entity ${found.id} for shulker ${shulker.name} (uuid=${pending.uuid})")
                         if (shulker.happy) notify("§eblock§f → §7item§f §7(${shulker.name})§f")
                         claimedEntityIds.add(found.id)
-                        (found as EntityAccessor).invokeSetSharedFlag(6, true)
+                        if (shulker.happy) (found as EntityAccessor).invokeSetSharedFlag(6, true)
                     }
                     iterator.remove()
                 }
@@ -662,7 +925,7 @@ object WTFClient : ClientModInitializer {
                 val readyEntities = mutableListOf<Pair<ItemEntity, Int>>()
                 while (dropIterator.hasNext()) {
                     val (entityId, spawnTick) = dropIterator.next()
-                    if (tickCounter - spawnTick > 60) {
+                    if (tickCounter - spawnTick > 200) {
                         dropIterator.remove()
                         continue
                     }
@@ -672,6 +935,7 @@ object WTFClient : ClientModInitializer {
                     readyEntities.add(entity to spawnTick)
                 }
 
+                pruneDropExpectations()
                 if (readyEntities.isNotEmpty()) {
                     val claimedUUIDs = mutableSetOf<String>()
                     var anyMatched = false
@@ -687,10 +951,45 @@ object WTFClient : ClientModInitializer {
                         return false
                     }
 
+                    // Pass 0: intentional drops announced by LocalPlayer.drop /
+                    // menu throw clicks. FIFO by drop order - own drops spawn
+                    // near the player, so require proximity. Binds identity
+                    // before content components have even synced.
+                    val afterExpect = mutableListOf<Pair<ItemEntity, Int>>()
+                    for (re in readyEntities) {
+                        val entity = re.first
+                        val entityType = BuiltInRegistries.ITEM.getKey(entity.item.item).toString()
+                        val entityHash = fingerprintFromItem(entity.item)
+                        if (entityHash == null && dropExpectations.any { it.type == entityType }) {
+                            // Components not synced yet - can't verify against the
+                            // expectation's fingerprint. Requeue instead of binding
+                            // blind (a broken unrelated box would steal identity).
+                            pendingDropEntities.add(entity.id to re.second)
+                            continue
+                        }
+                        val expect = if (entity.distanceToSqr(player) < 36.0) {
+                            dropExpectations.firstOrNull {
+                                it.type == entityType && it.hash == entityHash && it.uuid !in claimedUUIDs &&
+                                    trackedShulkers[it.uuid]?.let { e -> matchableState(e, entity) } == true
+                            }
+                        } else null
+                        if (expect != null) {
+                            dropExpectations.remove(expect)
+                            val match = trackedShulkers[expect.uuid]!!
+                            claimedUUIDs.add(match.uuid)
+                            injectItemUUID(entity.item, match.uuid)
+                            applyDropMatch(match, entity, level)
+                            log("drop expect: bound entity ${entity.id} to ${match.uuid.take(8)}")
+                            anyMatched = true
+                        } else {
+                            afterExpect.add(re)
+                        }
+                    }
+
                     // Pass 1: identity match via wtf:uuid (survives if uuid is still
                     // present in CUSTOM_DATA on the dropped stack).
                     val unmatched = mutableListOf<Pair<ItemEntity, Int>>()
-                    for (re in readyEntities) {
+                    for (re in afterExpect) {
                         val entity = re.first
                         val itemUUID = getItemUUID(entity.item)
                         val match = itemUUID?.let { trackedShulkers[it] }
@@ -916,9 +1215,11 @@ object WTFClient : ClientModInitializer {
                 throttleTicks = THROTTLE_WINDOW
             }
 
+            if (postJoinGraceTicks > 0) postJoinGraceTicks--
+
             if (scanQueued) {
-                if (throttleTicks > 0) {
-                    throttleTicks--
+                if (throttleTicks > 0 || postJoinGraceTicks > 0) {
+                    if (throttleTicks > 0) throttleTicks--
                 } else {
                     performInventoryScan(level, player)
                     scanQueued = false
@@ -996,13 +1297,39 @@ object WTFClient : ClientModInitializer {
         net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientEntityEvents.ENTITY_LOAD.register { entity, _ ->
             if (entity is ItemEntity) {
                 val player = Minecraft.getInstance().player
-                val nearPlayer = player != null && entity.distanceToSqr(player) < 4.0
+                // 2 blocks is too tight under latency - by ENTITY_LOAD time the
+                // player may have moved past the drop's synced spawn position.
+                val nearPlayer = player != null && entity.distanceToSqr(player) < 36.0
                 // Also catch drops near a tracked placed block: covers breaks by
                 // other players, explosions, etc. while we're in render distance.
                 val nearTrackedBlock = !nearPlayer && trackedShulkers.values.any { e ->
                     e.state == "block" && parseVec3(e.coords)?.let { c ->
                         entity.distanceToSqr(c.first + 0.5, c.second + 0.5, c.third + 0.5) < 9.0
                     } == true
+                }
+                if (isShulkerItem(entity.item) || entity.item.isEmpty) {
+                    log("ENTITY_LOAD item entity ${entity.id}: distSq=${if (player != null) entity.distanceToSqr(player) else -1.0} nearPlayer=$nearPlayer nearTrackedBlock=$nearTrackedBlock item=${entity.item}")
+                }
+                // Self-drops can be picked back up (auto-pickup while standing
+                // still) before DATA_ITEM ever syncs as non-empty - the entity
+                // is gone again by the next tick, so the normal pendingDropEntities
+                // hash-match never gets a chance to run. If we're holding a
+                // matching drop expectation and this is an empty-item entity
+                // spawning right at the player, bind it immediately (we already
+                // know identity/type from the expectation, recorded pre-drop).
+                if (entity.item.isEmpty && nearPlayer && dropExpectations.isNotEmpty()) {
+                    val expect = dropExpectations.firstOrNull {
+                        trackedShulkers[it.uuid]?.state == "inv"
+                    }
+                    val lvl = entity.level() as? Level
+                    if (expect != null && lvl != null) {
+                        dropExpectations.remove(expect)
+                        val match = trackedShulkers[expect.uuid]!!
+                        applyDropMatch(match, entity, lvl)
+                        log("drop expect: immediate-bound entity ${entity.id} to ${match.uuid.take(8)} (empty-item, ENTITY_LOAD)")
+                        save()
+                        return@register
+                    }
                 }
                 if (nearPlayer || nearTrackedBlock) {
                     pendingDropEntities.add(entity.id to tickCounter)
@@ -1113,7 +1440,29 @@ object WTFClient : ClientModInitializer {
                 currentKey = hashMatch.uuid
                 log("handleShulkerScreen: hash-matched key=$currentKey")
             } else {
-                log("handleShulkerScreen: no match found, coords=$coordStr beUUID=$beUUID heldUUID=$heldUUID")
+                // Contents changed since last cached (no uuid stamp yet, e.g.
+                // freshly placed) - exact hash can never match. Don't drop the
+                // record just because contents moved without us watching;
+                // fall back to a unique name match and accept the new
+                // contents as current, same as ex-inv recovery does.
+                val nameMatch = trackedShulkers.values.singleOrNull { k ->
+                    k.uuid != heldUUID && k.happy && k.type == shulkerType && k.name == displayName &&
+                        (k.state == "inv" || k.state == "item" || k.state == "ex-inv")
+                }
+                if (nameMatch != null) {
+                    nameMatch.state = "block"
+                    nameMatch.entity_id = ""
+                    nameMatch.coords = coordStr
+                    nameMatch.dim = dimStr
+                    nameMatch.lastKnown = false
+                    nameMatch.last_update_time = System.currentTimeMillis().toString()
+                    nameMatch.from = "hss:name_match"
+                    notify("§amatch§f → §eblock§f §7(${nameMatch.name})§7 §7(contents changed)")
+                    currentKey = nameMatch.uuid
+                    log("handleShulkerScreen: name-matched key=$currentKey (contents changed)")
+                } else {
+                    log("handleShulkerScreen: no match found, coords=$coordStr beUUID=$beUUID heldUUID=$heldUUID")
+                }
             }
         } else {
             log("handleShulkerScreen: matched key=$currentKey")
@@ -1146,13 +1495,22 @@ object WTFClient : ClientModInitializer {
                 val patch = DataComponentPatch.builder()
                     .set(DataComponents.CUSTOM_DATA, CustomData.of(uuidTag))
                     .build()
-                be?.applyComponents(be.components(), patch)
+                // collectComponents() includes implicit components (CONTAINER);
+                // be.components() doesn't, and applyComponents rebuilds the BE's
+                // itemStacks from the base map - using the cached map wipes the
+                // client-side items until the box is reopened.
+                be?.applyComponents(be.collectComponents(), patch)
             }
 
             val entry = trackedShulkers[finalUUID]
             val newHappy = !(entry?.happy ?: false)
             
             if (entry == null) {
+                val newCached = chooseRicherCache(
+                    serializeContainerToNbt(container),
+                    be?.let { serializeContainerToNbt(it) }
+                )
+                log("toggle happy: new entry $finalUUID containerSize=${container.containerSize} cachedNbt=${newCached?.size ?: "NULL"} items=${newCached?.let { deserializeNbtToItems(it).count { s -> !s.isEmpty } } ?: -1}")
                 trackedShulkers[finalUUID] = ShulkerState(
                     uuid = finalUUID,
                     state = "block",
@@ -1164,21 +1522,20 @@ object WTFClient : ClientModInitializer {
                     contentHash = contentHash,
                     from = "new-entry",
                     type = shulkerType,
-                    cachedContents = chooseRicherCache(
-                        serializeContainerToNbt(container),
-                        be?.let { serializeContainerToNbt(it) }
-                    )
+                    cachedContents = newCached
                 )
             } else {
                 entry.happy = newHappy
                 entry.name = displayName
                 entry.contentHash = contentHash
                 entry.type = shulkerType
-                entry.cachedContents = chooseRicherCache(
+                val newCached = chooseRicherCache(
                     serializeContainerToNbt(container),
                     be?.let { serializeContainerToNbt(it) },
                     entry.cachedContents
                 )
+                log("toggle happy: existing entry $finalUUID containerSize=${container.containerSize} cachedNbt=${newCached?.size ?: "NULL"} items=${newCached?.let { deserializeNbtToItems(it).count { s -> !s.isEmpty } } ?: -1}")
+                entry.cachedContents = newCached
                 entry.last_update_time = System.currentTimeMillis().toString()
                 entry.from = "toggle"
             }
@@ -1215,8 +1572,14 @@ object WTFClient : ClientModInitializer {
             if (entry != null) {
                 val newNbt = serializeContainerToNbt(container)
                 val newHash = fingerprintContainer(container, shulkerType, be?.components()?.get(DataComponents.CUSTOM_NAME))
-                entry.cachedContents = newNbt
-                entry.contentHash = newHash
+                // Container can already be cleared client-side by the time the
+                // close event fires - don't blank a known-good cache with an
+                // empty read.
+                val newHasItems = newNbt != null && deserializeNbtToItems(newNbt).any { !it.isEmpty }
+                if (newHasItems) {
+                    entry.cachedContents = newNbt
+                    entry.contentHash = newHash
+                }
                 entry.last_update_time = System.currentTimeMillis().toString()
                 entry.from = "hss:close"
                 log("handleShulkerScreenClosed: updated cachedContents and contentHash for happy=${entry.happy} uuid=$currentKey")
@@ -1469,7 +1832,9 @@ object WTFClient : ClientModInitializer {
             val patch = DataComponentPatch.builder()
                 .set(DataComponents.CUSTOM_DATA, CustomData.of(uuidTag))
                 .build()
-            be.applyComponents(be.components(), patch)
+            // See happy-button note: base must include implicit CONTAINER or
+            // applyComponents wipes the BE's client-side items.
+            be.applyComponents(be.collectComponents(), patch)
         }
         
         val blockHash = if (be != null) {
@@ -1555,6 +1920,7 @@ object WTFClient : ClientModInitializer {
                     val baseLoc = "${entry.dim}:${entry.coords}"
                     if (entry.lastKnown) "§c[Last Known]§7 $baseLoc" else baseLoc
                 }
+                "enderchest" -> "Ender Chest"
                 else -> entry.coords
             }
             
@@ -1724,6 +2090,7 @@ object WTFClient : ClientModInitializer {
         prevHeldUUID = null
         scanQueued = false
         throttleTicks = 0
+        postJoinGraceTicks = 40
         tickCounter = 0
         if (debugMode) {
             val logFile = getLogFile(id)

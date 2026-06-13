@@ -8,6 +8,9 @@
 		"AbstractContainerScreenAccessor",
 		"ShulkerBoxMenuAccessor",
 		"ClientLevelMixin",
+		"ClientPacketListenerMixin",
+		"AbstractContainerMenuMixin",
+		"LocalPlayerMixin",
 		"EntityAccessor"
 	],
 	"injectors": {

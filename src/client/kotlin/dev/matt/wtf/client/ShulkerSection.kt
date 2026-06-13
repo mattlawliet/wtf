@@ -39,6 +39,7 @@ class ShulkerSection(
             ShulkerSectionType.INVENTORY -> 0xFF55FF55.toInt()
             ShulkerSectionType.ITEM -> 0xFFFFAA55.toInt()
             ShulkerSectionType.EXTERNAL_INV -> 0xFF55FFFF.toInt()
+            ShulkerSectionType.ENDERCHEST -> 0xFFAA55FF.toInt()
         }
 
         graphics.fill(x, y, x + width, y + HEADER_HEIGHT, 0xFF2A2A2A.toInt())
@@ -47,10 +48,11 @@ class ShulkerSection(
         graphics.text(font, collapseArrow, x + 2, y + (HEADER_HEIGHT - 8) / 2, 0xFFFFFFFF.toInt(), false)
 
         val headerText = when (type) {
-            ShulkerSectionType.BLOCK -> "BLOCKS"
-            ShulkerSectionType.INVENTORY -> "INVENTORY"
-            ShulkerSectionType.ITEM -> "ITEMS"
-            ShulkerSectionType.EXTERNAL_INV -> "EXTERNAL INVENTORIES"
+            ShulkerSectionType.BLOCK -> "PLACED IN WORLD"
+            ShulkerSectionType.INVENTORY -> "PLAYER INVENTORY"
+            ShulkerSectionType.ITEM -> "DROPPED"
+            ShulkerSectionType.EXTERNAL_INV -> "EXTERNAL INVENTORY"
+            ShulkerSectionType.ENDERCHEST -> "ENDER CHEST"
         }
 
         graphics.text(
