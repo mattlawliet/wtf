@@ -2184,7 +2184,7 @@ object WTFClient : ClientModInitializer {
                     log("fingerprintItems:   slot[$i] = $itemId x${s.count} hash=${ItemStack.hashItemAndComponents(s)}")
                 }
                 digest.update(1.toByte())
-                intToBytes(ItemStack.hashItemAndComponents(s)).forEach { digest.update(it) }
+                intToBytes(stableItemHash(s)).forEach { digest.update(it) }
             }
         }
         val result = digest.digest().toHex()
@@ -2349,6 +2349,25 @@ object WTFClient : ClientModInitializer {
         } else {
             uuid.toString()
         }?.takeIf { it.isNotEmpty() }
+    }
+
+    // hashItemAndComponents includes CUSTOM_DATA, so a wtf:uuid stamp on a
+    // nested shulker box - which server resync wipes on rejoin - changes
+    // the hash of whatever box contains it. Strip wtf:uuid before hashing
+    // so contentHash fingerprints stay stable across restarts.
+    private fun stableItemHash(stack: ItemStack): Int {
+        val data = stack.get(DataComponents.CUSTOM_DATA)
+        if (data == null || data.isEmpty) return ItemStack.hashItemAndComponents(stack)
+        val tag = data.copyTag()
+        if (!tag.contains("wtf:uuid")) return ItemStack.hashItemAndComponents(stack)
+        val stripped = stack.copy()
+        tag.remove("wtf:uuid")
+        if (tag.isEmpty) {
+            stripped.remove(DataComponents.CUSTOM_DATA)
+        } else {
+            stripped.set(DataComponents.CUSTOM_DATA, CustomData.of(tag))
+        }
+        return ItemStack.hashItemAndComponents(stripped)
     }
 
     private fun ensureItemUUID(stack: ItemStack): String {
