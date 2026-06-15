@@ -610,9 +610,11 @@ object WTFClient : ClientModInitializer {
             val hash = fingerprintFromItem(stack) ?: continue
             val hasCustomName = stack.has(DataComponents.CUSTOM_NAME)
             val name = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
+            val orphan = if (!openChestIsEnderChest)
+                resolveOrphanedChestSlot(type, hasCustomName, chestState, coordStr, dimStr, claimed) else null
             val uuid = resolveTrackedChestStack(hash, name, type, hasCustomName, claimed)
                 ?: persistedChestLedger[chestLoc]?.get(pos)?.takeIf { it in trackedShulkers && it !in claimed }
-                ?: resolveOrphanedChestSlot(type, hasCustomName, chestState, coordStr, dimStr, claimed)
+                ?: orphan
                 ?: continue
             slotLedger[pos] = uuid
             claimed.add(uuid)
@@ -696,7 +698,12 @@ object WTFClient : ClientModInitializer {
         }
 
         for (item in pending) {
-            val orphanUUID = resolveOrphanedChestSlot(item.stackType, item.hasCustomName, chestState, coordStr, dimStr, shulkersInChest)
+            // Ender chest strips client-injected tags on every reopen and its
+            // slot ordering is unreliable relative to box identity — orphan-relink
+            // would guess wrong, so only use it for ex-inv chests.
+            val orphanUUID = if (!openChestIsEnderChest)
+                resolveOrphanedChestSlot(item.stackType, item.hasCustomName, chestState, coordStr, dimStr, shulkersInChest)
+            else null
             val uuid = if (orphanUUID != null) {
                 orphanUUID
             } else {
