@@ -39,3 +39,4 @@ replay_*.log
 # Libraries/Sources that shouldn't be here (if they are external)
 # Based on the project structure, 'net/' seems to contain external code
 /net/
+tmp/

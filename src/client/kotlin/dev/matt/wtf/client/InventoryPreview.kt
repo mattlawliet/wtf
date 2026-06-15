@@ -1,6 +1,6 @@
 package dev.matt.wtf.client
 
-import net.minecraft.client.gui.GuiGraphicsExtractor
+import net.minecraft.client.gui.GuiGraphics
 import net.minecraft.world.item.ItemStack
 
 class InventoryPreview(
@@ -15,7 +15,7 @@ class InventoryPreview(
     val totalWidth get() = gridWidth * (cellSize + padding) + padding
     val totalHeight get() = gridHeight * (cellSize + padding) + padding
 
-    fun render(graphics: GuiGraphicsExtractor, startX: Int, startY: Int) {
+    fun render(graphics: GuiGraphics, startX: Int, startY: Int) {
         for (i in 0 until 27) {
             val col = i % 9
             val row = i / 9
@@ -31,7 +31,7 @@ class InventoryPreview(
             graphics.fill(x, y, x + cellSize, y + cellSize, 0x1A1A1A1A.toInt())
 
             if (!items.getOrNull(i)?.isEmpty!!) {
-                graphics.item(items[i], x, y)
+                graphics.renderItem(items[i], x, y)
             }
         }
     }

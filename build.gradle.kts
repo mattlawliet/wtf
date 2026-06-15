@@ -1,9 +1,9 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
-	id("net.fabricmc.fabric-loom")
+	id("net.fabricmc.fabric-loom-remap")
 	`maven-publish`
-	id("org.jetbrains.kotlin.jvm") version "2.4.0"
+	id("org.jetbrains.kotlin.jvm") version "2.3.21"
 }
 
 version = providers.gradleProperty("mod_version").get()
@@ -33,14 +33,14 @@ loom {
 dependencies {
 	// To change the versions see the gradle.properties file
 	minecraft("com.mojang:minecraft:${providers.gradleProperty("minecraft_version").get()}")
-	implementation("net.fabricmc:fabric-loader:${providers.gradleProperty("loader_version").get()}")
+	mappings(loom.officialMojangMappings())
+	modImplementation("net.fabricmc:fabric-loader:${providers.gradleProperty("loader_version").get()}")
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
-	implementation("net.fabricmc.fabric-api:fabric-api:${providers.gradleProperty("fabric_api_version").get()}")
-	implementation("net.fabricmc:fabric-language-kotlin:${providers.gradleProperty("fabric_kotlin_version").get()}")
+	modImplementation("net.fabricmc.fabric-api:fabric-api:${providers.gradleProperty("fabric_api_version").get()}")
+	modImplementation("net.fabricmc:fabric-language-kotlin:${providers.gradleProperty("fabric_kotlin_version").get()}")
 
-	// Sodium not yet available for 26.1.2 - remove until updated
-	// modRuntimeOnly("maven.modrinth:sodium:mc1.21.11-0.8.11-fabric")
+	modRuntimeOnly("maven.modrinth:sodium:mc1.21.11-0.8.11-fabric")
 }
 
 tasks.processResources {
@@ -53,12 +53,12 @@ tasks.processResources {
 }
 
 tasks.withType<JavaCompile>().configureEach {
-	options.release = 25
+	options.release = 21
 }
 
 kotlin {
 	compilerOptions {
-		jvmTarget = JvmTarget.JVM_25
+		jvmTarget = JvmTarget.JVM_21
 	}
 }
 
@@ -68,8 +68,8 @@ java {
 	// If you remove this line, sources will not be generated.
 	withSourcesJar()
 
-	sourceCompatibility = JavaVersion.VERSION_25
-	targetCompatibility = JavaVersion.VERSION_25
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
 }
 
 tasks.jar {

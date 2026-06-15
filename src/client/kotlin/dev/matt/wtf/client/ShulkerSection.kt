@@ -1,6 +1,6 @@
 package dev.matt.wtf.client
 
-import net.minecraft.client.gui.GuiGraphicsExtractor
+import net.minecraft.client.gui.GuiGraphics
 import net.minecraft.client.gui.Font
 import net.minecraft.network.chat.Component
 
@@ -33,7 +33,7 @@ class ShulkerSection(
         scrollOffset = 0
     }
 
-    fun renderHeader(graphics: GuiGraphicsExtractor, font: Font, x: Int, y: Int, width: Int) {
+    fun renderHeader(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int) {
         val headerColor = when (type) {
             ShulkerSectionType.BLOCK -> 0xFFFFAA00.toInt()
             ShulkerSectionType.INVENTORY -> 0xFF55FF55.toInt()
@@ -45,7 +45,7 @@ class ShulkerSection(
         graphics.fill(x, y, x + width, y + HEADER_HEIGHT, 0xFF2A2A2A.toInt())
 
         val collapseArrow = if (isCollapsed) ">" else "v"
-        graphics.text(font, collapseArrow, x + 2, y + (HEADER_HEIGHT - 8) / 2, 0xFFFFFFFF.toInt(), false)
+        graphics.drawString(font, collapseArrow, x + 2, y + (HEADER_HEIGHT - 8) / 2, 0xFFFFFFFF.toInt(), false)
 
         val headerText = when (type) {
             ShulkerSectionType.BLOCK -> "PLACED IN WORLD"
@@ -55,7 +55,7 @@ class ShulkerSection(
             ShulkerSectionType.ENDERCHEST -> "ENDER CHEST"
         }
 
-        graphics.text(
+        graphics.drawString(
             font,
             Component.literal(headerText),
             x + 12,
@@ -66,7 +66,7 @@ class ShulkerSection(
 
         val countText = "(${entries.size})"
         val countWidth = font.width(countText)
-        graphics.text(
+        graphics.drawString(
             font,
             Component.literal(countText),
             x + width - countWidth - 4,
@@ -76,7 +76,7 @@ class ShulkerSection(
         )
     }
 
-    fun renderEntries(graphics: GuiGraphicsExtractor, font: Font, x: Int, y: Int, width: Int, visibleHeight: Int, hoveredId: String?, selectedId: String?) {
+    fun renderEntries(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int, visibleHeight: Int, hoveredId: String?, selectedId: String?) {
         if (isCollapsed) return
         
         val startRow = (scrollOffset / ROW_HEIGHT).coerceAtLeast(0)

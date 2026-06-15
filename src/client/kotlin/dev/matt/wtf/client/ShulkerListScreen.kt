@@ -1,6 +1,6 @@
 package dev.matt.wtf.client
 
-import net.minecraft.client.gui.GuiGraphicsExtractor
+import net.minecraft.client.gui.GuiGraphics
 import net.minecraft.client.gui.components.EditBox
 import net.minecraft.client.gui.screens.Screen
 import net.minecraft.network.chat.Component
@@ -19,8 +19,8 @@ class ShulkerListScreen(private val entries: List<ShulkerEntry>) : Screen(Compon
         searchField = field
     }
 
-    override fun extractRenderState(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int, delta: Float) {
-        super.extractRenderState(graphics, mouseX, mouseY, delta)
+    override fun render(graphics: GuiGraphics, mouseX: Int, mouseY: Int, delta: Float) {
+        super.render(graphics, mouseX, mouseY, delta)
 
         val query = searchField?.value ?: ""
         val filtered = if (query.isEmpty()) entries else entries.filter { fuzzyMatch(query, it.name.string) }
@@ -34,8 +34,8 @@ class ShulkerListScreen(private val entries: List<ShulkerEntry>) : Screen(Compon
             val entry = filtered[i + scrollOffset]
             val y = listStartY + i * entryHeight
 
-            graphics.item(entry.stack, width / 2 - 100, y)
-            graphics.text(font, entry.name, width / 2 - 78, y + 4, -1, false)
+            graphics.renderItem(entry.stack, width / 2 - 100, y)
+            graphics.drawString(font, entry.name, width / 2 - 78, y + 4, -1, false)
             val detail = when (entry.section) {
                 "inv" -> slotLabel(entry.location)
                 "block" -> {
@@ -55,7 +55,7 @@ class ShulkerListScreen(private val entries: List<ShulkerEntry>) : Screen(Compon
                 }
                 else -> "Unknown"
             }
-            graphics.text(font, Component.literal("#${entry.shortHash}:${entry.serial}  $detail"), width / 2 - 78, y + 14, 0xFF808080.toInt(), false)
+            graphics.drawString(font, Component.literal("#${entry.shortHash}:${entry.serial}  $detail"), width / 2 - 78, y + 14, 0xFF808080.toInt(), false)
         }
 
         if (filtered.isEmpty()) {
@@ -63,7 +63,7 @@ class ShulkerListScreen(private val entries: List<ShulkerEntry>) : Screen(Compon
                 Component.literal("No happy shulkers found")
             else
                 Component.literal("No matching shulkers")
-            graphics.text(font, hint, width / 2 - font.width(hint) / 2, height / 2, 0xFF808080.toInt(), false)
+            graphics.drawString(font, hint, width / 2 - font.width(hint) / 2, height / 2, 0xFF808080.toInt(), false)
         }
     }
 

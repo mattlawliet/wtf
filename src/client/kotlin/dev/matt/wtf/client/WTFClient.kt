@@ -7,10 +7,10 @@ import dev.matt.wtf.client.mixin.ShulkerBoxMenuAccessor
 import dev.matt.wtf.client.mixin.EntityAccessor
 import com.mojang.blaze3d.platform.InputConstants
 import net.fabricmc.api.ClientModInitializer
-import net.fabricmc.fabric.api.client.command.v2.ClientCommands
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
-import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper
+import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents
 import net.fabricmc.fabric.api.client.screen.v1.Screens
@@ -554,14 +554,15 @@ object WTFClient : ClientModInitializer {
 
             val stackUUID = getItemUUID(stack)
             val stackHash = fingerprintFromItem(stack) ?: ""
+            val hasCustomName = stack.get(DataComponents.CUSTOM_NAME) != null
             val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
             val stackType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
             val ledgerUUID = if (menu.containerId == ledgerMenuId) {
                 slotLedger[ledgerPosKey(slot.index)]?.takeIf { it in trackedShulkers && it !in shulkersInChest }
             } else null
-            val matchedUUID = stackUUID?.takeIf { it in trackedShulkers }
+            val matchedUUID = stackUUID?.takeIf { it in trackedShulkers && it !in shulkersInChest }
                 ?: ledgerUUID
-                ?: resolveTrackedChestStack(stackHash, stackName, stackType, shulkersInChest)
+                ?: resolveTrackedChestStack(stackHash, stackName, stackType, hasCustomName, shulkersInChest)
             val uuid = if (matchedUUID != null) {
                 if (stackUUID != matchedUUID) {
                     injectItemUUID(stack, matchedUUID)
@@ -701,6 +702,7 @@ object WTFClient : ClientModInitializer {
         stackHash: String,
         stackName: String,
         stackType: String,
+        hasCustomName: Boolean,
         alreadyResolved: Set<String>
     ): String? {
         if (stackHash.isNotEmpty()) {
@@ -717,15 +719,21 @@ object WTFClient : ClientModInitializer {
             }
         }
 
-        val nameMatch = trackedShulkers.values.firstOrNull {
-            it.uuid !in alreadyResolved &&
-                it.happy &&
-                it.type == stackType &&
-                it.name == stackName
-        }
-        if (nameMatch != null) {
-            log("chest resolve: name-matched $stackName to tracked UUID ${nameMatch.uuid}")
-            return nameMatch.uuid
+        // Name match only makes sense for a real CUSTOM_NAME - "Shulker Box"/"???"
+        // are shared by every unnamed box of that type, so matching on those
+        // would steal identity from an arbitrary unrelated box (see chest
+        // resolve cachedContents-swap bug).
+        if (hasCustomName) {
+            val nameMatch = trackedShulkers.values.firstOrNull {
+                it.uuid !in alreadyResolved &&
+                    it.happy &&
+                    it.type == stackType &&
+                    it.name == stackName
+            }
+            if (nameMatch != null) {
+                log("chest resolve: name-matched $stackName to tracked UUID ${nameMatch.uuid}")
+                return nameMatch.uuid
+            }
         }
 
         return null
@@ -856,6 +864,48 @@ object WTFClient : ClientModInitializer {
         val nextSerial: Int = 1
     )
 
+    data class UiSettings(
+        val previewBlur: Boolean = true,
+        val showMatchPercent: Boolean = true
+    )
+
+    private var uiSettings = UiSettings()
+
+    private fun getUiSettingsFile(): File {
+        val baseDir = Minecraft.getInstance().gameDirectory
+        return File(baseDir, "config/wtf/ui_settings.json")
+    }
+
+    private fun loadUiSettings() {
+        val file = getUiSettingsFile()
+        if (!file.exists()) return
+        try {
+            uiSettings = gson.fromJson(file.readText(), UiSettings::class.java) ?: UiSettings()
+        } catch (e: Exception) {
+            log("loadUiSettings failed: $e")
+        }
+    }
+
+    private fun saveUiSettings() {
+        val file = getUiSettingsFile()
+        file.parentFile.mkdirs()
+        file.writeText(gson.toJson(uiSettings))
+    }
+
+    fun isPreviewBlurEnabled(): Boolean = uiSettings.previewBlur
+
+    fun setPreviewBlurEnabled(value: Boolean) {
+        uiSettings = uiSettings.copy(previewBlur = value)
+        saveUiSettings()
+    }
+
+    fun isShowMatchPercentEnabled(): Boolean = uiSettings.showMatchPercent
+
+    fun setShowMatchPercentEnabled(value: Boolean) {
+        uiSettings = uiSettings.copy(showMatchPercent = value)
+        saveUiSettings()
+    }
+
     override fun onInitializeClient() {
         val category = net.minecraft.client.KeyMapping.Category.register(
             Identifier.fromNamespaceAndPath("wtf", "mod")
@@ -863,7 +913,9 @@ object WTFClient : ClientModInitializer {
         val keyBinding = net.minecraft.client.KeyMapping(
             "key.wtf.shulker_list", InputConstants.Type.KEYSYM, -1, category
         )
-        KeyMappingHelper.registerKeyMapping(keyBinding)
+        KeyBindingHelper.registerKeyBinding(keyBinding)
+
+        loadUiSettings()
 
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             while (keyBinding.consumeClick()) {
@@ -1228,18 +1280,18 @@ object WTFClient : ClientModInitializer {
         }
 
         ClientCommandRegistrationCallback.EVENT.register { dispatcher, _ ->
-            dispatcher.register(ClientCommands.literal("wtf")
+            dispatcher.register(ClientCommandManager.literal("wtf")
                 .executes {
                     val entries = resolveHappyShulkers()
                     Minecraft.getInstance().setScreen(ShulkerGridScreen(entries))
                     1
                 }
-                .then(ClientCommands.literal("debug")
+                .then(ClientCommandManager.literal("debug")
                     .executes {
                         debugMode = !debugMode
                         debugVerbose = false
                         val status = if (debugMode) "§aon§f" else "§coff§f"
-                        Minecraft.getInstance().gui.chat.addClientSystemMessage(
+                        Minecraft.getInstance().gui.chat.addMessage(
                             Component.literal("§7[§fWTF§f] Debug $status")
                         )
                         if (debugMode) {
@@ -1258,7 +1310,7 @@ object WTFClient : ClientModInitializer {
                         }
                         1
                     }
-                    .then(ClientCommands.literal("verbose")
+                    .then(ClientCommandManager.literal("verbose")
                         .executes {
                             if (!debugMode) {
                                 debugMode = true
@@ -1276,7 +1328,7 @@ object WTFClient : ClientModInitializer {
                                 debugVerbose = !debugVerbose
                             }
                             val status = if (debugVerbose) "§averbose§f" else if (debugMode) "§aon (standard)§f" else "§coff§f"
-                            Minecraft.getInstance().gui.chat.addClientSystemMessage(
+                            Minecraft.getInstance().gui.chat.addMessage(
                                 Component.literal("§7[§fWTF§f] Debug $status")
                             )
                             1
@@ -1549,7 +1601,7 @@ object WTFClient : ClientModInitializer {
             .pos(a.leftPos + a.imageWidth / 2 - 6, a.topPos + 3)
             .size(12, 12)
             .build()
-        Screens.getWidgets(screen).add(button)
+        Screens.getButtons(screen).add(button)
     }
 
     private fun handleShulkerScreenClosed(screen: ShulkerBoxScreen) {
@@ -1706,7 +1758,10 @@ object WTFClient : ClientModInitializer {
                 transitOrder.remove(uuid)
                 changed = true
             } else {
-                val nameMatch = trackedShulkers.values.firstOrNull {
+                // "???" is the no-CUSTOM_NAME sentinel - every unnamed box of
+                // this type shares it, so name-matching on it would steal
+                // identity from an arbitrary unrelated box.
+                val nameMatch = if (stackName == "???") null else trackedShulkers.values.firstOrNull {
                     it.uuid !in foundUUIDs &&
                         it.happy &&
                         (it.state == "inv" || it.state == "item") &&
@@ -1789,6 +1844,28 @@ object WTFClient : ClientModInitializer {
         }
     }
 
+    // Inventory sync packets (ContainerSetContent/ContainerSetSlot) often
+    // arrive with CUSTOM_DATA stripped from shulker stacks, even when nothing
+    // actually changed - the wtf:uuid tag "vanishes" client-side until the
+    // next scan re-hash-matches it. Re-stamp it immediately based on slot
+    // locality so identity never observably drops.
+    fun repairSlotUUIDs() {
+        val mc = Minecraft.getInstance()
+        if (!mc.isSameThread) return
+        val player = mc.player ?: return
+        val inv = player.inventoryMenu
+        for (i in inv.slots.indices) {
+            val stack = inv.getSlot(i).item
+            if (stack.isEmpty || !isShulkerItem(stack)) continue
+            if (getItemUUID(stack) != null) continue
+            val locKey = indexToKey(i)
+            val match = trackedShulkers.values.firstOrNull { it.state == "inv" && it.coords == locKey } ?: continue
+            val hash = fingerprintFromItem(stack) ?: continue
+            if (hash != match.contentHash && match.contentHash != genericEmptyHash(match.type)) continue
+            injectItemUUID(stack, match.uuid)
+            log("repairSlotUUIDs: re-stamped $locKey with ${match.uuid.take(8)} (${match.name})")
+        }
+    }
 
     @JvmStatic
     fun onShulkerPlaced(player: Player, pos: BlockPos, hand: InteractionHand, stack: ItemStack) {
@@ -2182,7 +2259,7 @@ object WTFClient : ClientModInitializer {
         // Strip Private Use Area chars: some resource packs (e.g. Redstone Tweaks)
         // map these to large guide-table bitmaps, blowing up chat if present in item names.
         val sanitized = msg.replace(Regex("[\\uE000-\\uF8FF]"), "")
-        Minecraft.getInstance().gui.chat.addClientSystemMessage(Component.literal("§7[§fWTF§7] §f$sanitized"))
+        Minecraft.getInstance().gui.chat.addMessage(Component.literal("§7[§fWTF§7] §f$sanitized"))
         log(msg)
     }
 

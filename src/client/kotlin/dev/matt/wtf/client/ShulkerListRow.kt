@@ -1,6 +1,6 @@
 package dev.matt.wtf.client
 
-import net.minecraft.client.gui.GuiGraphicsExtractor
+import net.minecraft.client.gui.GuiGraphics
 import net.minecraft.client.gui.Font
 import net.minecraft.network.chat.Component
 import net.minecraft.world.item.ItemStack
@@ -19,7 +19,7 @@ class ShulkerListRow(
         const val SLOT_SIZE = 16
     }
 
-    fun render(graphics: GuiGraphicsExtractor, font: Font, x: Int, y: Int, width: Int, isHovered: Boolean, isSelected: Boolean) {
+    fun render(graphics: GuiGraphics, font: Font, x: Int, y: Int, width: Int, isHovered: Boolean, isSelected: Boolean) {
         val bgColor = when {
             isSelected -> 0xFF4A4A4A.toInt()
             isHovered -> 0xFF3A3A3A.toInt()
@@ -38,24 +38,25 @@ class ShulkerListRow(
             ShulkerSectionType.ENDERCHEST -> 0xFFAA55FF.toInt()
         }
 
-        graphics.item(stack, x + 2, y + (BASE_ROW_HEIGHT - SLOT_SIZE) / 2)
+        graphics.renderItem(stack, x + 2, y + (BASE_ROW_HEIGHT - SLOT_SIZE) / 2)
 
         val displayName = name.string
         val prefix = if (lastKnown && section == ShulkerSectionType.EXTERNAL_INV) "§c[LK]§r " else ""
         val textLeftPad = SLOT_SIZE + 4
-        val rightPad = 4 + (if (matchPercent > 0f) font.width("${(matchPercent * 100).toInt()}%") + 4 else 0)
+        val showPercent = matchPercent > 0f && WTFClient.isShowMatchPercentEnabled()
+        val rightPad = 4 + (if (showPercent) font.width("${(matchPercent * 100).toInt()}%") + 4 else 0)
         val maxTextWidth = width - textLeftPad - rightPad
         val fullName = "$prefix$displayName"
         val truncatedName = if (font.width(fullName) > maxTextWidth)
             font.plainSubstrByWidth(fullName, maxTextWidth)
         else fullName
 
-        graphics.text(font, truncatedName, x + textLeftPad, y + (BASE_ROW_HEIGHT - 8) / 2, textColor, false)
+        graphics.drawString(font, truncatedName, x + textLeftPad, y + (BASE_ROW_HEIGHT - 8) / 2, textColor, false)
 
-        if (matchPercent > 0f) {
+        if (showPercent) {
             val percentText = "${(matchPercent * 100).toInt()}%"
             val percentWidth = font.width(percentText)
-            graphics.text(
+            graphics.drawString(
                 font,
                 Component.literal(percentText),
                 x + width - percentWidth - 4,
