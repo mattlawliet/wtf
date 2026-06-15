@@ -963,6 +963,8 @@ object WTFClient : ClientModInitializer {
 
     fun isShowMatchPercentEnabled(): Boolean = uiSettings.showMatchPercent
 
+    fun isDebugModeEnabled(): Boolean = debugMode
+
     fun setShowMatchPercentEnabled(value: Boolean) {
         uiSettings = uiSettings.copy(showMatchPercent = value)
         saveUiSettings()
@@ -1245,7 +1247,7 @@ object WTFClient : ClientModInitializer {
             // 3. Periodically verify blocks in loaded chunks to avoid stale position data.
             // Placed blocks are checked every 5 ticks (cheap blockstate read, and
             // piston/external breaks need fast reaction); ex-inv containers every 40.
-            if (tickCounter % 5 == 0) {
+            if (tickCounter % 5 == 0 && postJoinGraceTicks <= 0) {
                 var changed = false
                 val currentDim = level.dimension().identifier().toString()
                 for (shulker in trackedShulkers.values) {
@@ -2255,7 +2257,7 @@ object WTFClient : ClientModInitializer {
         prevHeldUUID = null
         scanQueued = false
         throttleTicks = 0
-        postJoinGraceTicks = 40
+        postJoinGraceTicks = 100
         tickCounter = 0
         if (debugMode) {
             val logFile = getLogFile(id)
@@ -2351,12 +2353,25 @@ object WTFClient : ClientModInitializer {
             return
         }
 
-        val uuid = ensureItemUUID(stack)
         val displayName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: stack.hoverName.string
         val shulkerType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
         val contentHash = fingerprintFromItem(stack) ?: ""
         val cachedNbt = serializeShulkerContents(stack)
         val player = mc.player
+
+        // A stack without a stamped uuid may still correspond to an existing
+        // tracked entry that just hasn't been hash-matched yet (e.g. an
+        // unmatched duplicate in this chest's seedChestSlotUUIDs pass).
+        // Resolving it the same way avoids minting a fresh uuid that "steals"
+        // this slot from the real entry on chest close, which marks the real
+        // entry's last known location as stale (LK).
+        val hasCustomName = stack.has(DataComponents.CUSTOM_NAME)
+        val uuid = getItemUUID(stack) ?: run {
+            val claimed = slotLedger.values.toSet()
+            resolveTrackedChestStack(contentHash, displayName, shulkerType, hasCustomName, claimed)
+                ?.also { injectItemUUID(stack, it) }
+                ?: ensureItemUUID(stack)
+        }
 
         val entry = trackedShulkers[uuid]
         val newHappy = !(entry?.happy ?: false)
