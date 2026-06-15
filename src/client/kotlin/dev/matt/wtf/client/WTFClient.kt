@@ -1497,7 +1497,12 @@ object WTFClient : ClientModInitializer {
             if (trackedShulkers[uuid]?.happy != true) continue
             val x = accessor.leftPos + slot.x
             val y = accessor.topPos + slot.y
-            graphics.text(font, markerIcon, x + 9, y - 2, getMarkerColor(), true)
+            val pose = graphics.pose()
+            pose.pushMatrix()
+            pose.translate(x + 10f, y - 1f)
+            pose.scale(0.6f)
+            graphics.text(font, markerIcon, 0, 0, getMarkerColor(), true)
+            pose.popMatrix()
         }
     }
 
