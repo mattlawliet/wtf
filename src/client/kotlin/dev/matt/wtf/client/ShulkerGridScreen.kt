@@ -348,12 +348,14 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         }
 
         val statusParts = mutableListOf<String>()
-        if (selected.from.isNotEmpty()) {
-            statusParts.add("from ${selected.from}")
-        }
-        val lastLocation = selected.lastLocation
-        if (!lastLocation.isNullOrEmpty()) {
-            statusParts.add("last ${compactLocation(lastLocation)}")
+        if (WTFClient.isDebugModeEnabled()) {
+            if (selected.from.isNotEmpty()) {
+                statusParts.add("from ${selected.from}")
+            }
+            val lastLocation = selected.lastLocation
+            if (!lastLocation.isNullOrEmpty()) {
+                statusParts.add("last ${compactLocation(lastLocation)}")
+            }
         }
         if (statusParts.isEmpty()) {
             val itemCount = items.count { !it.isEmpty }

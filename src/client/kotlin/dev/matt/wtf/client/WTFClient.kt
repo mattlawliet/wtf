@@ -291,6 +291,11 @@ object WTFClient : ClientModInitializer {
     private var scanQueued: Boolean = false
     private var throttleTicks: Int = 0
     private val THROTTLE_WINDOW = 5
+    // Container contents can arrive a tick or two after the screen opens
+    // (sync packet latency). If the chest is closed before that, the slot
+    // scan looks empty for not-yet-synced stacks - don't trust a "missing"
+    // verdict from a scan that ran too soon after open.
+    private val MIN_CHEST_SCAN_TICKS = 6
     // Just after world join, the inventory may not be fully synced yet -
     // running the first scan too early sees an empty/partial inventory and
     // demotes still-held "inv" entries to "ex-inv" (pass 4 cleanup). Hold
@@ -299,6 +304,7 @@ object WTFClient : ClientModInitializer {
 
 
     private var openChestPos: BlockPos? = null
+    private var openChestScreenTick: Int = 0
     // Ender chest is a per-player inventory, not a place - contents are
     // identical regardless of which physical ender chest was opened. Tracked
     // with state="enderchest" (own section), dim/coords unused/empty.
@@ -508,6 +514,7 @@ object WTFClient : ClientModInitializer {
     private fun handleChestScreen(mc: Minecraft, screen: Any) {
         val level = mc.level ?: return
 
+        openChestScreenTick = tickCounter
         openChestPos = null
         val menu = (screen as? net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>)?.menu
         // Client-side the ender chest menu's container is a plain SimpleContainer
@@ -623,6 +630,7 @@ object WTFClient : ClientModInitializer {
             val matchedUUID = stackUUID?.takeIf { it in trackedShulkers }
                 ?: ledgerUUID
                 ?: resolveTrackedChestStack(stackHash, stackName, stackType, hasCustomName, shulkersInChest)
+                ?: resolveOrphanedChestSlot(stackHash, stackType, hasCustomName, chestState, coordStr, dimStr, shulkersInChest)
             val uuid = if (matchedUUID != null) {
                 if (stackUUID != matchedUUID) {
                     injectItemUUID(stack, matchedUUID)
@@ -741,7 +749,7 @@ object WTFClient : ClientModInitializer {
                             if (wasLK) notify("§c[LK]§f → §ainv§f §7(${entry.name})§f") else notify("§echest§f → §ainv§f §7(${entry.name})§f")
                         }
                         corrected = true
-                    } else if (!entry.lastKnown && !openChestIsEnderChest) {
+                    } else if (!entry.lastKnown && !openChestIsEnderChest && tickCounter - openChestScreenTick >= MIN_CHEST_SCAN_TICKS) {
                         log("handleChestClosed self-correction: shulker ${entry.name} (uuid=${entry.uuid}) is no longer in chest at $chestLoc. Marking as external last-known.")
                         entry.lastKnown = true
                         entry.lastLocation = "${entry.dim}:${entry.coords}"
@@ -756,6 +764,34 @@ object WTFClient : ClientModInitializer {
         openChestPos = null
         openChestInvSnapshot = null
         save()
+    }
+
+    // Empty unnamed shulker boxes carry no identifying NBT, and a server
+    // resync (e.g. rejoining after a restart) wipes wtf:uuid from every
+    // stack. resolveTrackedChestStack can't tell two such boxes apart, so
+    // a wiped one would be minted as "new_discovery" while its old entry
+    // gets orphaned and flagged last-known. Since identical empty boxes
+    // are interchangeable, re-link to whichever previously-tracked entry
+    // for this exact chest slot is now missing its physical match.
+    private fun resolveOrphanedChestSlot(
+        stackHash: String,
+        stackType: String,
+        hasCustomName: Boolean,
+        chestState: String,
+        coordStr: String,
+        dimStr: String,
+        alreadyResolved: Set<String>
+    ): String? {
+        if (hasCustomName) return null
+        if (stackHash.isEmpty() || stackHash != genericEmptyHash(stackType)) return null
+        return trackedShulkers.values.firstOrNull {
+            it.uuid !in alreadyResolved &&
+                it.type == stackType &&
+                it.state == chestState &&
+                it.coords == coordStr &&
+                it.dim == dimStr &&
+                it.contentHash == stackHash
+        }?.uuid?.also { log("chest resolve: orphan-slot re-linked empty $stackType to tracked UUID $it") }
     }
 
     private fun resolveTrackedChestStack(
