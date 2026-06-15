@@ -574,6 +574,30 @@ object WTFClient : ClientModInitializer {
     // populated yet at handleChestScreen time (arrive via a later resync
     // packet, hence this is also called from repairSlotUUIDs).
     private fun seedChestSlotUUIDs(menu: net.minecraft.world.inventory.AbstractContainerMenu, player: Player?) {
+        val level = Minecraft.getInstance()?.level
+        val chestState: String
+        val chestLoc: String
+        val coordStr: String
+        val dimStr: String
+        if (openChestIsEnderChest) {
+            chestState = "enderchest"
+            chestLoc = "Ender Chest"
+            coordStr = ""
+            dimStr = ""
+        } else {
+            chestState = "ex-inv"
+            val pos = openChestPos
+            if (pos != null && level != null) {
+                chestLoc = blockLocation(pos, level)
+                coordStr = "${pos.x},${pos.y},${pos.z}"
+                dimStr = level.dimension().identifier().toString()
+            } else {
+                chestLoc = ""
+                coordStr = ""
+                dimStr = ""
+            }
+        }
+
         val claimed = slotLedger.values.toMutableSet()
         for (slot in menu.slots) {
             if (player != null && slot.container == player.inventory) continue
@@ -586,7 +610,10 @@ object WTFClient : ClientModInitializer {
             val hash = fingerprintFromItem(stack) ?: continue
             val hasCustomName = stack.has(DataComponents.CUSTOM_NAME)
             val name = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
-            val uuid = resolveTrackedChestStack(hash, name, type, hasCustomName, claimed) ?: continue
+            val uuid = resolveTrackedChestStack(hash, name, type, hasCustomName, claimed)
+                ?: persistedChestLedger[chestLoc]?.get(pos)?.takeIf { it in trackedShulkers && it !in claimed }
+                ?: resolveOrphanedChestSlot(type, hasCustomName, chestState, coordStr, dimStr, claimed)
+                ?: continue
             slotLedger[pos] = uuid
             claimed.add(uuid)
             injectItemUUID(stack, uuid)
