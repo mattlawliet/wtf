@@ -404,14 +404,25 @@ object WTFClient : ClientModInitializer {
         val player = Minecraft.getInstance().player ?: return
         val menu = player.containerMenu
         if (menu.containerId != ledgerMenuId) return
+        val stale = mutableListOf<String>()
         for ((pos, uuid) in slotLedger) {
-            if (uuid !in trackedShulkers) continue
+            val entry = trackedShulkers[uuid] ?: continue
             val idx = pos.removePrefix("s").toIntOrNull() ?: continue
             val slot = menu.slots.getOrNull(idx) ?: continue
             val stack = slot.item
             if (stack.isEmpty || !isShulkerItem(stack)) continue
-            if (getItemUUID(stack) != uuid) injectItemUUID(stack, uuid)
+            if (getItemUUID(stack) == uuid) continue
+            // Only re-stamp if this slot still plausibly holds the same
+            // shulker (contents match) - otherwise the slot's contents
+            // changed underneath the ledger and re-stamping would steal
+            // this uuid onto an unrelated stack.
+            if (fingerprintFromItem(stack) == entry.contentHash) {
+                injectItemUUID(stack, uuid)
+            } else {
+                stale.add(pos)
+            }
         }
+        stale.forEach { slotLedger.remove(it) }
     }
 
     fun onMenuClickPre(menu: net.minecraft.world.inventory.AbstractContainerMenu) {
@@ -599,6 +610,7 @@ object WTFClient : ClientModInitializer {
 
             val stackUUID = getItemUUID(stack)
             val stackHash = fingerprintFromItem(stack) ?: ""
+            val hasCustomName = stack.has(DataComponents.CUSTOM_NAME)
             val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
             val stackType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
             val ledgerUUID = if (menu.containerId == ledgerMenuId) {
@@ -606,7 +618,7 @@ object WTFClient : ClientModInitializer {
             } else null
             val matchedUUID = stackUUID?.takeIf { it in trackedShulkers }
                 ?: ledgerUUID
-                ?: resolveTrackedChestStack(stackHash, stackName, stackType, shulkersInChest)
+                ?: resolveTrackedChestStack(stackHash, stackName, stackType, hasCustomName, shulkersInChest)
             val uuid = if (matchedUUID != null) {
                 if (stackUUID != matchedUUID) {
                     injectItemUUID(stack, matchedUUID)
@@ -746,9 +758,10 @@ object WTFClient : ClientModInitializer {
         stackHash: String,
         stackName: String,
         stackType: String,
+        hasCustomName: Boolean,
         alreadyResolved: Set<String>
     ): String? {
-        if (stackHash.isNotEmpty()) {
+        if (stackHash.isNotEmpty() && stackHash != genericEmptyHash(stackType)) {
             val hashMatches = trackedShulkers.values.filter {
                 it.uuid !in alreadyResolved &&
                     it.type == stackType &&
@@ -762,15 +775,21 @@ object WTFClient : ClientModInitializer {
             }
         }
 
-        val nameMatch = trackedShulkers.values.firstOrNull {
-            it.uuid !in alreadyResolved &&
-                it.happy &&
-                it.type == stackType &&
-                it.name == stackName
-        }
-        if (nameMatch != null) {
-            log("chest resolve: name-matched $stackName to tracked UUID ${nameMatch.uuid}")
-            return nameMatch.uuid
+        // Name matching is only meaningful for boxes with a real CUSTOM_NAME -
+        // default-named ("Shulker Box") boxes share that name with every other
+        // unnamed box, so matching on it would steal a tracked uuid from the
+        // wrong physical stack.
+        if (hasCustomName) {
+            val nameMatch = trackedShulkers.values.firstOrNull {
+                it.uuid !in alreadyResolved &&
+                    it.happy &&
+                    it.type == stackType &&
+                    it.name == stackName
+            }
+            if (nameMatch != null) {
+                log("chest resolve: name-matched $stackName to tracked UUID ${nameMatch.uuid}")
+                return nameMatch.uuid
+            }
         }
 
         return null
@@ -1802,8 +1821,11 @@ object WTFClient : ClientModInitializer {
 
             if (hash.isEmpty()) continue
 
-            // Try to match with an unclaimed shulker in our map
-            val match = trackedShulkers.values.firstOrNull { 
+            // Try to match with an unclaimed shulker in our map. Skip generic
+            // empty-box hashes - shared by every unnamed empty box of this
+            // color, so matching on them would stamp two distinct physical
+            // stacks with the same uuid (see genericEmptyHash).
+            val match = if (hash == genericEmptyHash(stackType)) null else trackedShulkers.values.firstOrNull {
                 it.uuid !in foundUUIDs && it.contentHash == hash && (it.state == "inv" || it.state == "item")
             }
 
@@ -1847,7 +1869,7 @@ object WTFClient : ClientModInitializer {
                 }
 
                 // Ex-inv recovery: re-link ex-inv entries that reappeared in inventory
-                val recoveryMatch = trackedShulkers.values.firstOrNull {
+                val recoveryMatch = if (hash == genericEmptyHash(stackType)) null else trackedShulkers.values.firstOrNull {
                     it.uuid !in foundUUIDs &&
                         it.state == "ex-inv" &&
                         it.contentHash == hash
