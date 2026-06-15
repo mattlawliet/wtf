@@ -610,7 +610,8 @@ object WTFClient : ClientModInitializer {
             val hash = fingerprintFromItem(stack) ?: continue
             val hasCustomName = stack.has(DataComponents.CUSTOM_NAME)
             val name = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
-            val uuid = resolveTrackedChestStack(hash, name, type, hasCustomName, claimed)
+            val uuid = resolveTrackedChestStack(hash, name, type, hasCustomName, claimed,
+                    preferHint = persistedChestLedger[chestLoc]?.get(pos))
                 ?: persistedChestLedger[chestLoc]?.get(pos)?.takeIf { it in trackedShulkers && it !in claimed }
                 ?: continue
             slotLedger[pos] = uuid
@@ -685,7 +686,8 @@ object WTFClient : ClientModInitializer {
             val matchedUUID = stackUUID?.takeIf { it in trackedShulkers }
                 ?: ledgerUUID
                 ?: persistedUUID
-                ?: resolveTrackedChestStack(stackHash, stackName, stackType, hasCustomName, shulkersInChest)
+                ?: resolveTrackedChestStack(stackHash, stackName, stackType, hasCustomName, shulkersInChest,
+                    preferHint = persistedChestLedger[chestLoc]?.get(ledgerPosKey(slot.index)))
             if (matchedUUID != null) {
                 shulkersInChest.add(matchedUUID)
                 resolved.add(item to matchedUUID)
@@ -880,7 +882,8 @@ object WTFClient : ClientModInitializer {
         stackName: String,
         stackType: String,
         hasCustomName: Boolean,
-        alreadyResolved: Set<String>
+        alreadyResolved: Set<String>,
+        preferHint: String? = null
     ): String? {
         if (stackHash.isNotEmpty() && stackHash != genericEmptyHash(stackType)) {
             val hashMatches = trackedShulkers.values.filter {
@@ -889,7 +892,11 @@ object WTFClient : ClientModInitializer {
                     it.contentHash == stackHash &&
                     (it.state == "inv" || it.state == "item" || it.state == "block" || it.state == "ex-inv" || it.state == "enderchest")
             }
-            val hashMatch = hashMatches.firstOrNull { it.happy } ?: hashMatches.firstOrNull()
+            // When multiple candidates share the same hash (identical content),
+            // prefer the one the persisted slot ledger says belongs to this slot.
+            val hashMatch = hashMatches.firstOrNull { it.uuid == preferHint }
+                ?: hashMatches.firstOrNull { it.happy }
+                ?: hashMatches.firstOrNull()
             if (hashMatch != null) {
                 log("chest resolve: hash-matched $stackName to tracked UUID ${hashMatch.uuid}")
                 return hashMatch.uuid
