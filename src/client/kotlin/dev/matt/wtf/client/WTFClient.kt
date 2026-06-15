@@ -565,7 +565,7 @@ object WTFClient : ClientModInitializer {
                 if (hash == genericEmptyHash(type)) continue
                 val uuid = trackedShulkers.values.singleOrNull {
                     it.uuid !in claimed && it.type == type && it.contentHash == hash &&
-                        (it.state == "inv" || it.state == "item" || it.state == "block" || it.state == "ex-inv")
+                        (it.state == "inv" || it.state == "item" || it.state == "block" || it.state == "ex-inv" || it.state == "enderchest")
                 }?.uuid ?: continue
                 slotLedger[pos] = uuid
                 claimed.add(uuid)
@@ -766,7 +766,7 @@ object WTFClient : ClientModInitializer {
                 it.uuid !in alreadyResolved &&
                     it.type == stackType &&
                     it.contentHash == stackHash &&
-                    (it.state == "inv" || it.state == "item" || it.state == "block" || it.state == "ex-inv")
+                    (it.state == "inv" || it.state == "item" || it.state == "block" || it.state == "ex-inv" || it.state == "enderchest")
             }
             val hashMatch = hashMatches.firstOrNull { it.happy } ?: hashMatches.firstOrNull()
             if (hashMatch != null) {
