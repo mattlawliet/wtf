@@ -423,6 +423,7 @@ object WTFClient : ClientModInitializer {
             }
         }
         stale.forEach { slotLedger.remove(it) }
+        seedChestSlotUUIDs(menu, player)
     }
 
     fun onMenuClickPre(menu: net.minecraft.world.inventory.AbstractContainerMenu) {
@@ -546,31 +547,34 @@ object WTFClient : ClientModInitializer {
 
         if (menu != null) {
             seedLedger(menu)
-            // One-time heuristic resolve for chest-side stacks without uuid
-            // stamps; from here on clicks keep identities exact.
-            val claimed = slotLedger.values.toMutableSet()
-            val player = mc.player
-            for (slot in menu.slots) {
-                if (player != null && slot.container == player.inventory) continue
-                val stack = slot.item
-                if (stack.isEmpty || !isShulkerItem(stack)) continue
-                if (getItemUUID(stack)?.let { it in trackedShulkers } == true) continue
-                val pos = ledgerPosKey(slot.index)
-                if (pos in slotLedger) continue
-                // Re-stamp uuids on chest-side stacks so renderHappyMarkers
-                // (which reads getItemUUID directly) shows the marker while
-                // the chest is open - the ender chest in particular strips
-                // client-injected tags on every reopen.
-                val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
-                val hash = fingerprintFromItem(stack) ?: continue
-                val hasCustomName = stack.has(DataComponents.CUSTOM_NAME)
-                val name = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
-                val uuid = resolveTrackedChestStack(hash, name, type, hasCustomName, claimed) ?: continue
-                slotLedger[pos] = uuid
-                claimed.add(uuid)
-                injectItemUUID(stack, uuid)
-                log("ledger: chest seed $pos -> ${uuid.take(8)} (hash)")
-            }
+            seedChestSlotUUIDs(menu, mc.player)
+        }
+    }
+
+    // One-time heuristic resolve for chest-side stacks without uuid stamps,
+    // so renderHappyMarkers (which reads getItemUUID directly) shows the
+    // marker while the chest is open - the ender chest in particular strips
+    // client-injected tags on every reopen, and its contents may not even be
+    // populated yet at handleChestScreen time (arrive via a later resync
+    // packet, hence this is also called from repairSlotUUIDs).
+    private fun seedChestSlotUUIDs(menu: net.minecraft.world.inventory.AbstractContainerMenu, player: Player?) {
+        val claimed = slotLedger.values.toMutableSet()
+        for (slot in menu.slots) {
+            if (player != null && slot.container == player.inventory) continue
+            val stack = slot.item
+            if (stack.isEmpty || !isShulkerItem(stack)) continue
+            if (getItemUUID(stack)?.let { it in trackedShulkers } == true) continue
+            val pos = ledgerPosKey(slot.index)
+            if (pos in slotLedger) continue
+            val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+            val hash = fingerprintFromItem(stack) ?: continue
+            val hasCustomName = stack.has(DataComponents.CUSTOM_NAME)
+            val name = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
+            val uuid = resolveTrackedChestStack(hash, name, type, hasCustomName, claimed) ?: continue
+            slotLedger[pos] = uuid
+            claimed.add(uuid)
+            injectItemUUID(stack, uuid)
+            log("ledger: chest seed $pos -> ${uuid.take(8)} (hash)")
         }
     }
 
