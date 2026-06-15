@@ -554,19 +554,18 @@ object WTFClient : ClientModInitializer {
                 if (player != null && slot.container == player.inventory) continue
                 val stack = slot.item
                 if (stack.isEmpty || !isShulkerItem(stack)) continue
+                if (getItemUUID(stack)?.let { it in trackedShulkers } == true) continue
                 val pos = ledgerPosKey(slot.index)
                 if (pos in slotLedger) continue
-                // Strict: unique, non-generic content-hash match only. The
-                // name fallback of resolveTrackedChestStack ignores contents
-                // and would stamp a tracked uuid onto an untracked box that
-                // merely shares a name - permanently stealing its identity.
+                // Re-stamp uuids on chest-side stacks so renderHappyMarkers
+                // (which reads getItemUUID directly) shows the marker while
+                // the chest is open - the ender chest in particular strips
+                // client-injected tags on every reopen.
                 val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
                 val hash = fingerprintFromItem(stack) ?: continue
-                if (hash == genericEmptyHash(type)) continue
-                val uuid = trackedShulkers.values.singleOrNull {
-                    it.uuid !in claimed && it.type == type && it.contentHash == hash &&
-                        (it.state == "inv" || it.state == "item" || it.state == "block" || it.state == "ex-inv" || it.state == "enderchest")
-                }?.uuid ?: continue
+                val hasCustomName = stack.has(DataComponents.CUSTOM_NAME)
+                val name = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
+                val uuid = resolveTrackedChestStack(hash, name, type, hasCustomName, claimed) ?: continue
                 slotLedger[pos] = uuid
                 claimed.add(uuid)
                 injectItemUUID(stack, uuid)
