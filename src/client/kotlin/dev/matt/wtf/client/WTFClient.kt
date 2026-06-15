@@ -364,6 +364,13 @@ object WTFClient : ClientModInitializer {
     private val slotLedger = mutableMapOf<String, String>()
     private var clickPreSnapshot: MutableMap<String, ItemStack>? = null
 
+    // Cross-session slot->uuid map per chest, keyed by chest location string.
+    // wtf:uuid stamps and content hashes can both go unstable across a game
+    // restart (server resync wipes CUSTOM_DATA, which can also perturb the
+    // content hash of boxes containing other stamped boxes). Slot position
+    // within a given chest is the most reliable cross-restart identity we have.
+    private val persistedChestLedger = mutableMapOf<String, MutableMap<String, String>>()
+
     private fun ledgerPosKey(slotIndex: Int) = "s$slotIndex"
 
     private fun captureMenuShulkers(menu: net.minecraft.world.inventory.AbstractContainerMenu, copy: Boolean): MutableMap<String, ItemStack> {
@@ -627,8 +634,11 @@ object WTFClient : ClientModInitializer {
             val ledgerUUID = if (menu.containerId == ledgerMenuId) {
                 slotLedger[ledgerPosKey(slot.index)]?.takeIf { it in trackedShulkers && it !in shulkersInChest }
             } else null
+            val persistedUUID = persistedChestLedger[chestLoc]?.get(ledgerPosKey(slot.index))
+                ?.takeIf { it in trackedShulkers && it !in shulkersInChest }
             val matchedUUID = stackUUID?.takeIf { it in trackedShulkers }
                 ?: ledgerUUID
+                ?: persistedUUID
                 ?: resolveTrackedChestStack(stackHash, stackName, stackType, hasCustomName, shulkersInChest)
                 ?: resolveOrphanedChestSlot(stackHash, stackType, hasCustomName, chestState, coordStr, dimStr, shulkersInChest)
             val uuid = if (matchedUUID != null) {
@@ -659,6 +669,7 @@ object WTFClient : ClientModInitializer {
                 newUuid
             }
             shulkersInChest.add(uuid)
+            persistedChestLedger.getOrPut(chestLoc) { mutableMapOf() }[ledgerPosKey(slot.index)] = uuid
 
             val entry = trackedShulkers[uuid]
             if (entry != null) {
@@ -959,7 +970,8 @@ object WTFClient : ClientModInitializer {
         val version: Int = 14,
         val nextSerial: Int = 1,
         val markerIcon: String? = null,
-        val markerColorIdx: Int? = null
+        val markerColorIdx: Int? = null,
+        val chestSlotLedger: Map<String, Map<String, String>>? = null
     )
 
     data class UiSettings(
@@ -2318,6 +2330,8 @@ object WTFClient : ClientModInitializer {
             nextSerial = save.nextSerial
             markerIcon = save.markerIcon?.takeIf { it in markerIcons } ?: markerIcons[0]
             markerColorIdx = save.markerColorIdx?.takeIf { it in markerColorOptions.indices } ?: 0
+            persistedChestLedger.clear()
+            save.chestSlotLedger?.forEach { (loc, slots) -> persistedChestLedger[loc] = slots.toMutableMap() }
             val totalCached = save.tracked_shulkers.values.count { it.cachedContents != null }
             log("load: loaded tracked_shulkers=${save.tracked_shulkers.size}, cachedContents=$totalCached")
         } catch (e: Exception) { 
@@ -2552,12 +2566,17 @@ object WTFClient : ClientModInitializer {
 
         if (happyShulkers.isEmpty() && !file.exists() && markerIcon == markerIcons[0] && markerColorIdx == 0) return
 
+        val prunedLedger = persistedChestLedger.mapValues { (_, slots) ->
+            slots.filterValues { it in trackedShulkers }
+        }.filterValues { it.isNotEmpty() }
+
         val json = gson.toJson(ShulkerSave(
             version = 14,
             nextSerial = nextSerial,
             tracked_shulkers = happyShulkers,
             markerIcon = markerIcon,
-            markerColorIdx = markerColorIdx
+            markerColorIdx = markerColorIdx,
+            chestSlotLedger = prunedLedger
         ))
         log("save: tracked_shulkers=${happyShulkers.size}, cachedContents=$totalCached (${totalBytes}B), json=${json.length} chars")
         file.writeText(json)
