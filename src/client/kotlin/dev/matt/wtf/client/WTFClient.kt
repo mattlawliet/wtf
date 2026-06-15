@@ -640,7 +640,7 @@ object WTFClient : ClientModInitializer {
                 ?: ledgerUUID
                 ?: persistedUUID
                 ?: resolveTrackedChestStack(stackHash, stackName, stackType, hasCustomName, shulkersInChest)
-                ?: resolveOrphanedChestSlot(stackHash, stackType, hasCustomName, chestState, coordStr, dimStr, shulkersInChest)
+                ?: resolveOrphanedChestSlot(stackType, hasCustomName, chestState, coordStr, dimStr, shulkersInChest)
             val uuid = if (matchedUUID != null) {
                 if (stackUUID != matchedUUID) {
                     injectItemUUID(stack, matchedUUID)
@@ -777,15 +777,15 @@ object WTFClient : ClientModInitializer {
         save()
     }
 
-    // Empty unnamed shulker boxes carry no identifying NBT, and a server
-    // resync (e.g. rejoining after a restart) wipes wtf:uuid from every
-    // stack. resolveTrackedChestStack can't tell two such boxes apart, so
-    // a wiped one would be minted as "new_discovery" while its old entry
-    // gets orphaned and flagged last-known. Since identical empty boxes
-    // are interchangeable, re-link to whichever previously-tracked entry
-    // for this exact chest slot is now missing its physical match.
+    // Unnamed shulker boxes carry no identifying NBT, and a server resync
+    // (e.g. rejoining after a restart) can wipe wtf:uuid and/or perturb
+    // content-hash fingerprints (CUSTOM_DATA on nested boxes, etc). When
+    // none of that resolves a slot, but a previously-tracked entry for this
+    // exact chest is now missing its physical match, re-link to it - two
+    // unnamed boxes in the same chest are otherwise indistinguishable, so
+    // any pairing that keeps the tracked identity attached to this chest is
+    // as good as any other.
     private fun resolveOrphanedChestSlot(
-        stackHash: String,
         stackType: String,
         hasCustomName: Boolean,
         chestState: String,
@@ -794,15 +794,13 @@ object WTFClient : ClientModInitializer {
         alreadyResolved: Set<String>
     ): String? {
         if (hasCustomName) return null
-        if (stackHash.isEmpty() || stackHash != genericEmptyHash(stackType)) return null
         return trackedShulkers.values.firstOrNull {
             it.uuid !in alreadyResolved &&
                 it.type == stackType &&
                 it.state == chestState &&
                 it.coords == coordStr &&
-                it.dim == dimStr &&
-                it.contentHash == stackHash
-        }?.uuid?.also { log("chest resolve: orphan-slot re-linked empty $stackType to tracked UUID $it") }
+                it.dim == dimStr
+        }?.uuid?.also { log("chest resolve: orphan-slot re-linked unnamed $stackType to tracked UUID $it") }
     }
 
     private fun resolveTrackedChestStack(
