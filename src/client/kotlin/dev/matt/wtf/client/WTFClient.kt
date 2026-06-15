@@ -34,6 +34,7 @@ import net.minecraft.world.Container
 import net.minecraft.world.entity.player.Player
 import net.minecraft.world.entity.item.ItemEntity
 import net.minecraft.world.InteractionHand
+import net.minecraft.world.inventory.Slot
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.component.CustomData
 import net.minecraft.world.level.Level
@@ -619,8 +620,25 @@ object WTFClient : ClientModInitializer {
         val chestState = if (openChestIsEnderChest) "enderchest" else "ex-inv"
         val notifyTag = if (openChestIsEnderChest) "§dender§f" else "§echest§f"
 
-        // 1. Scan all slots in the container to find which shulkers are currently inside
+        // 1. Scan all slots in the container to find which shulkers are currently inside.
+        // Two passes: first reserve every confident match (uuid/ledger/hash), then
+        // resolve leftover unnamed slots against leftover tracked entries. Doing
+        // this in one pass let an early ambiguous duplicate steal the tracked
+        // identity that a later slot would otherwise have hash-matched correctly.
+        data class ScanItem(
+            val slot: Slot,
+            val stack: ItemStack,
+            val stackUUID: String?,
+            val stackHash: String,
+            val hasCustomName: Boolean,
+            val stackName: String,
+            val stackType: String
+        )
+
         val shulkersInChest = mutableSetOf<String>()
+        val pending = mutableListOf<ScanItem>()
+        val resolved = mutableListOf<Pair<ScanItem, String>>()
+
         for (slot in menu.slots) {
             if (slot.container == player.inventory) continue
             val stack = slot.item
@@ -631,6 +649,8 @@ object WTFClient : ClientModInitializer {
             val hasCustomName = stack.has(DataComponents.CUSTOM_NAME)
             val stackName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
             val stackType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+            val item = ScanItem(slot, stack, stackUUID, stackHash, hasCustomName, stackName, stackType)
+
             val ledgerUUID = if (menu.containerId == ledgerMenuId) {
                 slotLedger[ledgerPosKey(slot.index)]?.takeIf { it in trackedShulkers && it !in shulkersInChest }
             } else null
@@ -640,15 +660,21 @@ object WTFClient : ClientModInitializer {
                 ?: ledgerUUID
                 ?: persistedUUID
                 ?: resolveTrackedChestStack(stackHash, stackName, stackType, hasCustomName, shulkersInChest)
-                ?: resolveOrphanedChestSlot(stackType, hasCustomName, chestState, coordStr, dimStr, shulkersInChest)
-            val uuid = if (matchedUUID != null) {
-                if (stackUUID != matchedUUID) {
-                    injectItemUUID(stack, matchedUUID)
-                }
-                matchedUUID
+            if (matchedUUID != null) {
+                shulkersInChest.add(matchedUUID)
+                resolved.add(item to matchedUUID)
+            } else {
+                pending.add(item)
+            }
+        }
+
+        for (item in pending) {
+            val orphanUUID = resolveOrphanedChestSlot(item.stackType, item.hasCustomName, chestState, coordStr, dimStr, shulkersInChest)
+            val uuid = if (orphanUUID != null) {
+                orphanUUID
             } else {
                 // Assign UUID to untracked shulker found in chest
-                val newUuid = ensureItemUUID(stack)
+                val newUuid = ensureItemUUID(item.stack)
                 // Create a tracking entry if not already tracked (discovered in chest)
                 if (newUuid !in trackedShulkers) {
                     trackedShulkers[newUuid] = ShulkerState(
@@ -657,18 +683,30 @@ object WTFClient : ClientModInitializer {
                         dim = dimStr,
                         coords = coordStr,
                         last_update_time = System.currentTimeMillis().toString(),
-                        name = stackName,
+                        name = item.stackName,
                         happy = false,
-                        contentHash = stackHash,
+                        contentHash = item.stackHash,
                         from = "chest:new_discovery",
-                        type = stackType,
-                        cachedContents = serializeShulkerContents(stack)
+                        type = item.stackType,
+                        cachedContents = serializeShulkerContents(item.stack)
                     )
-                    log("handleChestClosed: new untracked shulker discovered in chest at $chestLoc, uuid=$newUuid name=$stackName")
+                    log("handleChestClosed: new untracked shulker discovered in chest at $chestLoc, uuid=$newUuid name=${item.stackName}")
                 }
                 newUuid
             }
             shulkersInChest.add(uuid)
+            resolved.add(item to uuid)
+        }
+
+        for ((item, uuid) in resolved) {
+            val slot = item.slot
+            val stack = item.stack
+            val stackUUID = item.stackUUID
+            val stackHash = item.stackHash
+            val stackType = item.stackType
+            if (stackUUID != uuid) {
+                injectItemUUID(stack, uuid)
+            }
             persistedChestLedger.getOrPut(chestLoc) { mutableMapOf() }[ledgerPosKey(slot.index)] = uuid
 
             val entry = trackedShulkers[uuid]
