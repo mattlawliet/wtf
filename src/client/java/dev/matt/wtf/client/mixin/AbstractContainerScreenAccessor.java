@@ -1,6 +1,7 @@
 package dev.matt.wtf.client.mixin;
 
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.world.inventory.Slot;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
@@ -14,4 +15,7 @@ public interface AbstractContainerScreenAccessor {
 
     @Accessor("imageWidth")
     int getImageWidth();
+
+    @Accessor("hoveredSlot")
+    Slot getHoveredSlot();
 }

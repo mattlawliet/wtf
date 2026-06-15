@@ -13,6 +13,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents
+import net.fabricmc.fabric.api.client.screen.v1.ScreenKeyboardEvents
 import net.fabricmc.fabric.api.client.screen.v1.Screens
 import net.fabricmc.fabric.api.event.client.player.ClientPlayerBlockBreakEvents
 import net.fabricmc.loader.api.FabricLoader
@@ -976,6 +977,25 @@ object WTFClient : ClientModInitializer {
         )
         KeyMappingHelper.registerKeyMapping(keyBinding)
 
+        val toggleHappyKeyBinding = net.minecraft.client.KeyMapping(
+            "key.wtf.toggle_happy", InputConstants.Type.KEYSYM, -1, category
+        )
+        KeyMappingHelper.registerKeyMapping(toggleHappyKeyBinding)
+
+        // KeyMapping.click()/isDown are never updated while any Screen is open
+        // (Minecraft's KeyboardHandler returns early for non-debug keys in that
+        // case), so the toggle needs to hook the screen's raw key events directly
+        // to fire while hovering a slot in an open container.
+        ScreenEvents.AFTER_INIT.register { _, screen, _, _ ->
+            if (screen is net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>) {
+                ScreenKeyboardEvents.afterKeyPress(screen).register { _, keyEvent ->
+                    if (toggleHappyKeyBinding.matches(keyEvent)) {
+                        toggleHappyForHoveredSlot()
+                    }
+                }
+            }
+        }
+
         loadUiSettings()
 
         ClientTickEvents.END_CLIENT_TICK.register { client ->
@@ -984,6 +1004,10 @@ object WTFClient : ClientModInitializer {
                 if (entries.isNotEmpty()) {
                     client.setScreen(ShulkerGridScreen(entries))
                 }
+            }
+
+            while (toggleHappyKeyBinding.consumeClick()) {
+                toggleHappyForHoveredSlot()
             }
 
             val player = client.player ?: return@register
@@ -2309,6 +2333,58 @@ object WTFClient : ClientModInitializer {
         if (existing == uuid) return
         tag.putString("wtf:uuid", uuid)
         stack.set(DataComponents.CUSTOM_DATA, CustomData.of(tag))
+    }
+
+    // Toggles the happy tag for whatever shulker box ItemStack the cursor is
+    // hovering in any open container screen (player inv or external chest).
+    // Item stacks carry their CONTAINER component everywhere, so contents
+    // can be fingerprinted/cached without placing or opening the box.
+    private fun toggleHappyForHoveredSlot() {
+        val mc = Minecraft.getInstance()
+        val screen = mc.screen
+        if (screen !is net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>) {
+            return
+        }
+        val slot = (screen as AbstractContainerScreenAccessor).hoveredSlot ?: return
+        val stack = slot.item
+        if (stack.isEmpty || !isShulkerItem(stack)) {
+            return
+        }
+
+        val uuid = ensureItemUUID(stack)
+        val displayName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: stack.hoverName.string
+        val shulkerType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+        val contentHash = fingerprintFromItem(stack) ?: ""
+        val cachedNbt = serializeShulkerContents(stack)
+        val player = mc.player
+
+        val entry = trackedShulkers[uuid]
+        val newHappy = !(entry?.happy ?: false)
+        if (entry == null) {
+            val state = if (player != null && slot.container == player.inventory) "inv" else "ex-inv"
+            trackedShulkers[uuid] = ShulkerState(
+                uuid = uuid,
+                state = state,
+                last_update_time = System.currentTimeMillis().toString(),
+                name = displayName,
+                happy = newHappy,
+                contentHash = contentHash,
+                from = "keybind-toggle",
+                type = shulkerType,
+                cachedContents = cachedNbt
+            )
+        } else {
+            entry.happy = newHappy
+            entry.name = displayName
+            entry.contentHash = contentHash
+            entry.type = shulkerType
+            entry.cachedContents = chooseRicherCache(cachedNbt, entry.cachedContents)
+            entry.last_update_time = System.currentTimeMillis().toString()
+            entry.from = "keybind-toggle"
+        }
+        if (newHappy) notify("§anew§f happy shulker: §e${displayName}§f")
+        else notify("§etoggle§f ${displayName}: §c☹§f")
+        save()
     }
 
     private fun log(msg: String) {
