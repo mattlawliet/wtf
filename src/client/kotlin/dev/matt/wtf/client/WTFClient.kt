@@ -825,7 +825,12 @@ object WTFClient : ClientModInitializer {
                             if (wasLK) notify("§c[LK]§f → §ainv§f §7(${entry.name})§f") else notify("§echest§f → §ainv§f §7(${entry.name})§f")
                         }
                         corrected = true
-                    } else if (!entry.lastKnown && !openChestIsEnderChest && tickCounter - openChestScreenTick >= MIN_CHEST_SCAN_TICKS) {
+                    } else if (!entry.lastKnown && !openChestIsEnderChest && tickCounter - openChestScreenTick >= MIN_CHEST_SCAN_TICKS &&
+                        persistedChestLedger[chestLoc]?.containsValue(entry.uuid) == true) {
+                        // Only declare "missing" when we've previously pinned this uuid
+                        // to a specific slot via the persisted ledger - otherwise we may
+                        // just not have been able to identify it (ambiguous unnamed box),
+                        // so leave state unchanged rather than marking it last-known.
                         log("handleChestClosed self-correction: shulker ${entry.name} (uuid=${entry.uuid}) is no longer in chest at $chestLoc. Marking as external last-known.")
                         entry.lastKnown = true
                         entry.lastLocation = "${entry.dim}:${entry.coords}"
@@ -845,11 +850,12 @@ object WTFClient : ClientModInitializer {
     // Unnamed shulker boxes carry no identifying NBT, and a server resync
     // (e.g. rejoining after a restart) can wipe wtf:uuid and/or perturb
     // content-hash fingerprints (CUSTOM_DATA on nested boxes, etc). When
-    // none of that resolves a slot, but a previously-tracked entry for this
-    // exact chest is now missing its physical match, re-link to it - two
-    // unnamed boxes in the same chest are otherwise indistinguishable, so
-    // any pairing that keeps the tracked identity attached to this chest is
-    // as good as any other.
+    // none of that resolves a slot, re-link to the one previously-tracked
+    // entry for this chest of matching type — BUT only when there is exactly
+    // one such candidate. If there are two or more same-type unnamed boxes
+    // and only one candidate remains, picking randomly would swap identities
+    // across restarts; instead do nothing and let the persisted slot ledger
+    // accumulate correct mappings over time via manual opens.
     private fun resolveOrphanedChestSlot(
         stackType: String,
         hasCustomName: Boolean,
@@ -859,13 +865,15 @@ object WTFClient : ClientModInitializer {
         alreadyResolved: Set<String>
     ): String? {
         if (hasCustomName) return null
-        return trackedShulkers.values.firstOrNull {
+        val candidates = trackedShulkers.values.filter {
             it.uuid !in alreadyResolved &&
                 it.type == stackType &&
                 it.state == chestState &&
                 it.coords == coordStr &&
                 it.dim == dimStr
-        }?.uuid?.also { log("chest resolve: orphan-slot re-linked unnamed $stackType to tracked UUID $it") }
+        }
+        if (candidates.size != 1) return null
+        return candidates[0].uuid.also { log("chest resolve: orphan-slot re-linked unnamed $stackType to tracked UUID $it (unambiguous)") }
     }
 
     private fun resolveTrackedChestStack(
