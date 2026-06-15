@@ -22,14 +22,17 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private var searchQuery = ""
     private var pendingRemoveId: String? = null
     private var removeButtonBounds: IntArray? = null
+    private var percentButtonBounds: IntArray? = null
+    private var blurButtonBounds: IntArray? = null
 
     private val leftPanelWidth: Int
         get() = (width * 0.22f).toInt().coerceIn(130, 220)
 
     private val searchHeight = 20
+    private val topBarButtonWidth = 70
 
     override fun init() {
-        val field = EditBox(font, 10, 5, width - 20, searchHeight,
+        val field = EditBox(font, 10, 5, width - 230, searchHeight,
             Component.literal("Search shulkers..."))
         field.setResponder { text ->
             searchQuery = text
@@ -39,6 +42,32 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         addRenderableWidget(field)
         setFocused(field)
         searchField = field
+
+        val iconButton = net.minecraft.client.gui.components.Button.builder(
+            Component.literal(WTFClient.getMarkerIcon())
+        ) { btn ->
+            btn.setMessage(Component.literal(WTFClient.cycleMarkerIcon()))
+        }
+            .pos(width - 55, 5)
+            .size(20, 20)
+            .tooltip(net.minecraft.client.gui.components.Tooltip.create(Component.literal("Marker icon")))
+            .build()
+        addRenderableWidget(iconButton)
+
+        fun colorSwatch(rgb: Int) = Component.literal("■")
+            .withStyle { it.withColor(net.minecraft.network.chat.TextColor.fromRgb(rgb and 0xFFFFFF)) }
+
+        val colorButton = net.minecraft.client.gui.components.Button.builder(
+            colorSwatch(WTFClient.getMarkerColor())
+        ) { btn ->
+            WTFClient.cycleMarkerColor()
+            btn.setMessage(colorSwatch(WTFClient.getMarkerColor()))
+        }
+            .pos(width - 30, 5)
+            .size(20, 20)
+            .tooltip(net.minecraft.client.gui.components.Tooltip.create(Component.literal("Marker color")))
+            .build()
+        addRenderableWidget(colorButton)
 
         rebuildSections("")
     }
@@ -138,7 +167,43 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         renderLeftPanel(graphics, mouseX, mouseY)
         renderPreviewPanel(graphics, mouseX, mouseY)
         renderPreviewGridTooltip(graphics, mouseX, mouseY)
+        renderTopBarButtons(graphics, mouseX, mouseY)
     }
+
+    private fun renderTopBarButtons(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
+        val btnHeight = searchHeight
+        val percentOn = WTFClient.isShowMatchPercentEnabled()
+        val blurOn = WTFClient.isPreviewBlurEnabled()
+
+        val blurX = width - 135
+        val percentX = blurX - 5 - topBarButtonWidth
+
+        percentButtonBounds = intArrayOf(percentX, 5, percentX + topBarButtonWidth, 5 + btnHeight)
+        blurButtonBounds = intArrayOf(blurX, 5, blurX + topBarButtonWidth, 5 + btnHeight)
+
+        renderToggleButton(graphics, percentButtonBounds!!, "Match %", percentOn, mouseX, mouseY)
+        renderToggleButton(graphics, blurButtonBounds!!, "Blur BG", blurOn, mouseX, mouseY)
+    }
+
+    private fun renderToggleButton(graphics: GuiGraphicsExtractor, bounds: IntArray, label: String, on: Boolean, mouseX: Int, mouseY: Int) {
+        val (x0, y0, x1, y1) = bounds
+        val isHovered = mouseX in x0..x1 && mouseY in y0..y1
+        val bgColor = when {
+            on && isHovered -> 0xFF3A6A3A.toInt()
+            on -> 0xFF2A5A2A.toInt()
+            isHovered -> 0xFF4A4A4A.toInt()
+            else -> 0xFF3A3A3A.toInt()
+        }
+        graphics.fill(x0, y0, x1, y1, bgColor)
+        val text = "$label: ${if (on) "On" else "Off"}"
+        val textWidth = font.width(text)
+        graphics.text(font, Component.literal(text), x0 + (x1 - x0 - textWidth) / 2, y0 + (y1 - y0 - 8) / 2, 0xFFFFFFFF.toInt(), false)
+    }
+
+    private operator fun IntArray.component1() = this[0]
+    private operator fun IntArray.component2() = this[1]
+    private operator fun IntArray.component3() = this[2]
+    private operator fun IntArray.component4() = this[3]
 
     private fun renderLeftPanel(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
         val panelY = searchHeight + 5
@@ -200,12 +265,19 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         val previewX = leftPanelWidth + 7
         val previewWidth = width - previewX - 7
 
-        graphics.fill(previewX - 3, panelY, width - 3, panelY + panelHeight, 0xFF2A2A2A.toInt())
+        val blurred = WTFClient.isPreviewBlurEnabled()
+        if (!blurred) {
+            graphics.fill(previewX - 3, panelY, width - 3, panelY + panelHeight, 0xFF2A2A2A.toInt())
+        }
 
         val selected = allEntries.find { it.id == selectedId }
         if (selected == null) {
+            val hintY = panelY + panelHeight / 2 - 4
+            if (blurred) {
+                graphics.fill(previewX - 3, hintY - 10, width - 3, hintY + 14, 0xFF2A2A2A.toInt())
+            }
             val hint = Component.literal("Select a shulker")
-            graphics.text(font, hint, previewX, panelY + 30, 0xFF808080.toInt(), true)
+            graphics.text(font, hint, previewX, hintY, 0xFF808080.toInt(), true)
             removeButtonBounds = null
             return
         }
@@ -218,7 +290,9 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         val cellSize = 22
         val cellPadding = 2
         val gridStartX = previewX + (previewWidth - 9 * (cellSize + cellPadding)) / 2
-        val gridStartY = panelY + 10
+        // total content height: 3 grid rows + gap + info/button block
+        val contentHeight = 3 * (cellSize + cellPadding) + 10 + 52
+        val gridStartY = (panelY + (panelHeight - contentHeight) / 2).coerceAtLeast(panelY + 10)
 
         for (i in 0 until 27) {
             val col = i % 9
@@ -236,6 +310,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             }
         }
 
+        val infoX = gridStartX
         val nameY = gridStartY + 3 * (cellSize + cellPadding) + 10
         val nameColor = when (selected.section) {
             "block" -> 0xFFFFAA00.toInt()
@@ -244,7 +319,6 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             "ex-inv" -> 0xFF55FFFF.toInt()
             else -> 0xFFFFFFFF.toInt()
         }
-        graphics.text(font, selected.name, previewX, nameY, nameColor, false)
 
         val detailText = when (selected.section) {
             "block" -> {
@@ -272,7 +346,6 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             }
             else -> ""
         }
-        graphics.text(font, Component.literal(detailText), previewX, nameY + 12, 0xFF808080.toInt(), false)
 
         val statusParts = mutableListOf<String>()
         if (selected.from.isNotEmpty()) {
@@ -287,14 +360,23 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             statusParts.add("items $itemCount")
         }
         val statusText = font.plainSubstrByWidth(statusParts.joinToString(" | "), previewWidth)
-        graphics.text(font, Component.literal(statusText), previewX, nameY + 24, 0xFFFFFF00.toInt(), false)
 
         // Remove record button - second click confirms
-        val btnX = previewX
+        val btnX = infoX
         val btnY = nameY + 38
         val btnLabel = if (pendingRemoveId == selected.id) "Click again to confirm removal" else "Remove record"
         val btnWidth = font.width(btnLabel) + 10
         val btnHeight = 14
+
+        val infoWidth = maxOf(font.width(selected.name.string), font.width(detailText), font.width(statusText), btnWidth)
+        if (blurred) {
+            graphics.fill(infoX - 3, nameY - 4, infoX + infoWidth + 3, nameY + 56, 0xFF2A2A2A.toInt())
+        }
+
+        graphics.text(font, selected.name, infoX, nameY, nameColor, false)
+        graphics.text(font, Component.literal(detailText), infoX, nameY + 12, 0xFF808080.toInt(), false)
+        graphics.text(font, Component.literal(statusText), infoX, nameY + 24, 0xFFFFFF00.toInt(), false)
+
         removeButtonBounds = intArrayOf(btnX, btnY, btnX + btnWidth, btnY + btnHeight)
         val isHovered = mouseX in btnX..(btnX + btnWidth) && mouseY in btnY..(btnY + btnHeight)
         val bgColor = if (pendingRemoveId == selected.id) {
@@ -350,7 +432,20 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         val mouseX = mouseButtonEvent.x
         val mouseY = mouseButtonEvent.y
         val button = mouseButtonEvent.button()
-        
+
+        if (button == 0) {
+            val pBounds = percentButtonBounds
+            if (pBounds != null && mouseX >= pBounds[0] && mouseX < pBounds[2] && mouseY >= pBounds[1] && mouseY < pBounds[3]) {
+                WTFClient.setShowMatchPercentEnabled(!WTFClient.isShowMatchPercentEnabled())
+                return true
+            }
+            val bBounds = blurButtonBounds
+            if (bBounds != null && mouseX >= bBounds[0] && mouseX < bBounds[2] && mouseY >= bBounds[1] && mouseY < bBounds[3]) {
+                WTFClient.setPreviewBlurEnabled(!WTFClient.isPreviewBlurEnabled())
+                return true
+            }
+        }
+
         if (button == 0 && mouseX >= leftPanelWidth) {
             val bounds = removeButtonBounds
             val selected = allEntries.find { it.id == selectedId }

@@ -43,7 +43,8 @@ class ShulkerListRow(
         val displayName = name.string
         val prefix = if (lastKnown && section == ShulkerSectionType.EXTERNAL_INV) "§c[LK]§r " else ""
         val textLeftPad = SLOT_SIZE + 4
-        val rightPad = 4 + (if (matchPercent > 0f) font.width("${(matchPercent * 100).toInt()}%") + 4 else 0)
+        val showPercent = matchPercent > 0f && WTFClient.isShowMatchPercentEnabled()
+        val rightPad = 4 + (if (showPercent) font.width("${(matchPercent * 100).toInt()}%") + 4 else 0)
         val maxTextWidth = width - textLeftPad - rightPad
         val fullName = "$prefix$displayName"
         val truncatedName = if (font.width(fullName) > maxTextWidth)
@@ -52,7 +53,7 @@ class ShulkerListRow(
 
         graphics.text(font, truncatedName, x + textLeftPad, y + (BASE_ROW_HEIGHT - 8) / 2, textColor, false)
 
-        if (matchPercent > 0f) {
+        if (showPercent) {
             val percentText = "${(matchPercent * 100).toInt()}%"
             val percentWidth = font.width(percentText)
             graphics.text(

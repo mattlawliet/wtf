@@ -17,7 +17,9 @@ import net.fabricmc.fabric.api.client.screen.v1.Screens
 import net.fabricmc.fabric.api.event.client.player.ClientPlayerBlockBreakEvents
 import net.fabricmc.loader.api.FabricLoader
 import net.minecraft.client.Minecraft
+import net.minecraft.client.gui.GuiGraphicsExtractor
 import net.minecraft.client.gui.components.Button
+import net.minecraft.client.gui.screens.Screen
 import net.minecraft.client.gui.screens.inventory.ShulkerBoxScreen
 import net.minecraft.world.phys.BlockHitResult
 import net.minecraft.core.BlockPos
@@ -100,6 +102,17 @@ object WTFClient : ClientModInitializer {
         .registerTypeAdapter(object : com.google.gson.reflect.TypeToken<ByteArray?>() {}.type, byteArrayAdapter)
         .create()
     private val trackedShulkers = HashMap<String, ShulkerState>()
+    private val markerIcons = listOf("★", "●", "■", "♦", "▲")
+    private val markerColorOptions = listOf(
+        "Yellow" to 0xFFFFFF55.toInt(),
+        "Red" to 0xFFFF5555.toInt(),
+        "Green" to 0xFF55FF55.toInt(),
+        "Cyan" to 0xFF55FFFF.toInt(),
+        "White" to 0xFFFFFFFF.toInt(),
+        "Orange" to 0xFFFFAA00.toInt()
+    )
+    private var markerIcon: String = markerIcons[0]
+    private var markerColorIdx: Int = 0
     private var currentWorldId: String? = null
     private var nextSerial = 1
     private var debugMode = false
@@ -367,6 +380,38 @@ object WTFClient : ClientModInitializer {
             claimed.add(uuid)
         }
         log("ledger: seeded ${slotLedger.size} entries for menu ${menu.containerId}")
+    }
+
+    fun getMarkerIcon() = markerIcon
+
+    fun getMarkerColor() = markerColorOptions[markerColorIdx].second
+
+    fun getMarkerColorName() = markerColorOptions[markerColorIdx].first
+
+    fun cycleMarkerIcon(): String {
+        markerIcon = markerIcons[(markerIcons.indexOf(markerIcon) + 1) % markerIcons.size]
+        save()
+        return markerIcon
+    }
+
+    fun cycleMarkerColor(): String {
+        markerColorIdx = (markerColorIdx + 1) % markerColorOptions.size
+        save()
+        return markerColorOptions[markerColorIdx].first
+    }
+
+    fun repairSlotUUIDs() {
+        val player = Minecraft.getInstance().player ?: return
+        val menu = player.containerMenu
+        if (menu.containerId != ledgerMenuId) return
+        for ((pos, uuid) in slotLedger) {
+            if (uuid !in trackedShulkers) continue
+            val idx = pos.removePrefix("s").toIntOrNull() ?: continue
+            val slot = menu.slots.getOrNull(idx) ?: continue
+            val stack = slot.item
+            if (stack.isEmpty || !isShulkerItem(stack)) continue
+            if (getItemUUID(stack) != uuid) injectItemUUID(stack, uuid)
+        }
     }
 
     fun onMenuClickPre(menu: net.minecraft.world.inventory.AbstractContainerMenu) {
@@ -853,8 +898,52 @@ object WTFClient : ClientModInitializer {
     data class ShulkerSave(
         val tracked_shulkers: Map<String, ShulkerState> = emptyMap(),
         val version: Int = 14,
-        val nextSerial: Int = 1
+        val nextSerial: Int = 1,
+        val markerIcon: String? = null,
+        val markerColorIdx: Int? = null
     )
+
+    data class UiSettings(
+        val previewBlur: Boolean = true,
+        val showMatchPercent: Boolean = true
+    )
+
+    private var uiSettings = UiSettings()
+
+    private fun getUiSettingsFile(): File {
+        val baseDir = Minecraft.getInstance().gameDirectory
+        return File(baseDir, "config/wtf/ui_settings.json")
+    }
+
+    private fun loadUiSettings() {
+        val file = getUiSettingsFile()
+        if (!file.exists()) return
+        try {
+            uiSettings = gson.fromJson(file.readText(), UiSettings::class.java) ?: UiSettings()
+        } catch (e: Exception) {
+            log("loadUiSettings failed: $e")
+        }
+    }
+
+    private fun saveUiSettings() {
+        val file = getUiSettingsFile()
+        file.parentFile.mkdirs()
+        file.writeText(gson.toJson(uiSettings))
+    }
+
+    fun isPreviewBlurEnabled(): Boolean = uiSettings.previewBlur
+
+    fun setPreviewBlurEnabled(value: Boolean) {
+        uiSettings = uiSettings.copy(previewBlur = value)
+        saveUiSettings()
+    }
+
+    fun isShowMatchPercentEnabled(): Boolean = uiSettings.showMatchPercent
+
+    fun setShowMatchPercentEnabled(value: Boolean) {
+        uiSettings = uiSettings.copy(showMatchPercent = value)
+        saveUiSettings()
+    }
 
     override fun onInitializeClient() {
         val category = net.minecraft.client.KeyMapping.Category.register(
@@ -864,6 +953,8 @@ object WTFClient : ClientModInitializer {
             "key.wtf.shulker_list", InputConstants.Type.KEYSYM, -1, category
         )
         KeyMappingHelper.registerKeyMapping(keyBinding)
+
+        loadUiSettings()
 
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             while (keyBinding.consumeClick()) {
@@ -1387,6 +1478,26 @@ object WTFClient : ClientModInitializer {
                     }
                 }
             }
+            if (screen is AbstractContainerScreenAccessor) {
+                ScreenEvents.afterExtract(screen).register { _, graphics, _, _, _ ->
+                    renderHappyMarkers(screen, graphics)
+                }
+            }
+        }
+    }
+
+    private fun renderHappyMarkers(screen: Screen, graphics: GuiGraphicsExtractor) {
+        val container = screen as? net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*> ?: return
+        val accessor = screen as AbstractContainerScreenAccessor
+        val font = Minecraft.getInstance().font
+        for (slot in container.menu.slots) {
+            val stack = slot.item
+            if (stack.isEmpty || !isShulkerItem(stack)) continue
+            val uuid = getItemUUID(stack) ?: continue
+            if (trackedShulkers[uuid]?.happy != true) continue
+            val x = accessor.leftPos + slot.x
+            val y = accessor.topPos + slot.y
+            graphics.text(font, markerIcon, x + 9, y - 2, getMarkerColor(), true)
         }
     }
 
@@ -2113,6 +2224,8 @@ object WTFClient : ClientModInitializer {
             trackedShulkers.clear()
             trackedShulkers.putAll(save.tracked_shulkers)
             nextSerial = save.nextSerial
+            markerIcon = save.markerIcon?.takeIf { it in markerIcons } ?: markerIcons[0]
+            markerColorIdx = save.markerColorIdx?.takeIf { it in markerColorOptions.indices } ?: 0
             val totalCached = save.tracked_shulkers.values.count { it.cachedContents != null }
             log("load: loaded tracked_shulkers=${save.tracked_shulkers.size}, cachedContents=$totalCached")
         } catch (e: Exception) { 
@@ -2261,12 +2374,14 @@ object WTFClient : ClientModInitializer {
         val totalCached = happyShulkers.values.count { it.cachedContents != null }
         val totalBytes = happyShulkers.values.mapNotNull { it.cachedContents?.size ?: 0 }.sum()
 
-        if (happyShulkers.isEmpty() && !file.exists()) return
+        if (happyShulkers.isEmpty() && !file.exists() && markerIcon == markerIcons[0] && markerColorIdx == 0) return
 
         val json = gson.toJson(ShulkerSave(
             version = 14,
             nextSerial = nextSerial,
-            tracked_shulkers = happyShulkers
+            tracked_shulkers = happyShulkers,
+            markerIcon = markerIcon,
+            markerColorIdx = markerColorIdx
         ))
         log("save: tracked_shulkers=${happyShulkers.size}, cachedContents=$totalCached (${totalBytes}B), json=${json.length} chars")
         file.writeText(json)
