@@ -104,7 +104,7 @@ object WTFClient : ClientModInitializer {
         .registerTypeAdapter(object : com.google.gson.reflect.TypeToken<ByteArray?>() {}.type, byteArrayAdapter)
         .create()
     private val trackedShulkers = HashMap<String, ShulkerState>()
-    private val markerIcons = listOf("★", "●", "■", "♦", "▲")
+    private val markerIcons = listOf("★", "●", "■", "♦", "▲", "none")
     private val markerColorOptions = listOf(
         "Yellow" to 0xFFFFFF55.toInt(),
         "Red" to 0xFFFF5555.toInt(),
@@ -397,7 +397,7 @@ object WTFClient : ClientModInitializer {
         log("ledger: seeded ${slotLedger.size} entries for menu ${menu.containerId}")
     }
 
-    fun getMarkerIcon() = markerIcon
+    fun getMarkerIcon() = if (markerIcon == "none") "—" else markerIcon
 
     fun getMarkerColor() = markerColorOptions[markerColorIdx].second
 
@@ -406,7 +406,7 @@ object WTFClient : ClientModInitializer {
     fun cycleMarkerIcon(): String {
         markerIcon = markerIcons[(markerIcons.indexOf(markerIcon) + 1) % markerIcons.size]
         save()
-        return markerIcon
+        return getMarkerIcon()
     }
 
     fun cycleMarkerColor(): String {
@@ -1469,6 +1469,11 @@ object WTFClient : ClientModInitializer {
                                 // resolution to "item" via pendingItemEntities -
                                 // don't race ahead and stale-clear it here.
                                 if (!stillExists && shulker.state == "block" && pendingItemEntities.any { it.uuid == shulker.uuid }) continue
+                                if (!stillExists && entryInPlayerInventory(player, shulker)) {
+                                    transferToInv(shulker, "tick:block_in_inv")
+                                    changed = true
+                                    continue
+                                }
                                 if (!stillExists) {
                                     log("tick verify: block at ${shulker.coords} is now $blockId (was expected to hold shulker ${shulker.name}). Marking as last-known.")
                                     shulker.lastLocation = "${shulker.dim}:${shulker.coords}"
@@ -1679,6 +1684,7 @@ object WTFClient : ClientModInitializer {
     }
 
     private fun renderHappyMarkers(screen: Screen, graphics: GuiGraphicsExtractor) {
+        if (markerIcon == "none") return
         val container = screen as? net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*> ?: return
         val accessor = screen as AbstractContainerScreenAccessor
         val font = Minecraft.getInstance().font
@@ -1849,9 +1855,9 @@ object WTFClient : ClientModInitializer {
             }
             
             currentKey = finalUUID
-            btn.setMessage(Component.literal(if (newHappy) "\u263A" else "\u2639"))
-            if (newHappy) notify("§anew§f happy shulker: §e${displayName}§f")
-            else notify("§etoggle§f ${displayName}: §c☹§f")
+            btn.setMessage(Component.literal(if (newHappy) getMarkerIcon() else "☹"))
+            if (newHappy) notify("§a${getMarkerIcon()}§f marked: §e${displayName}§f")
+            else notify("§7☹§f unmarked: §e${displayName}§f")
             save()
         }
             .pos(a.leftPos + a.imageWidth / 2 - 6, a.topPos + 3)
@@ -1999,7 +2005,7 @@ object WTFClient : ClientModInitializer {
             // color, so matching on them would stamp two distinct physical
             // stacks with the same uuid (see genericEmptyHash).
             val match = if (hash == genericEmptyHash(stackType)) null else trackedShulkers.values.firstOrNull {
-                it.uuid !in foundUUIDs && it.contentHash == hash && (it.state == "inv" || it.state == "item" || it.state == "enderchest")
+                it.uuid !in foundUUIDs && it.contentHash == hash && (it.state == "inv" || it.state == "item" || it.state == "enderchest" || it.state == "block")
             }
 
             if (match != null) {
@@ -2562,8 +2568,8 @@ object WTFClient : ClientModInitializer {
             entry.last_update_time = System.currentTimeMillis().toString()
             entry.from = "keybind-toggle"
         }
-        if (newHappy) notify("§anew§f happy shulker: §e${displayName}§f")
-        else notify("§etoggle§f ${displayName}: §c☹§f")
+        if (newHappy) notify("§a${getMarkerIcon()}§f marked: §e${displayName}§f")
+        else notify("§7☹§f unmarked: §e${displayName}§f")
         save()
     }
 

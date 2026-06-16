@@ -644,19 +644,29 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         else
             "§cSet a key for §ekey.wtf.toggle_happy§c in Controls."
         val lines = listOf(
-            "§eWTF Shulker Tracker",
+            "§eWTF Shulker Tracker §7— How to use",
             "",
-            toggleLine,
-            "§7Open any §finventory §7or §fchest §7to scan & track contents.",
+            "§f1. Mark a shulker box",
+            "   §7Hold or look at a shulker box, then press §f${toggleKey ?: "§c[key not set — see Controls]§7"}§7.",
+            "   §7Works on: box in hand, box in inventory, or §fplaced block§7 you're looking at.",
+            "   §7Press the same key again to unmark it.",
             "",
-            "§fTracked across:  §7Inventory · Chest · Ender Chest · Ground",
+            "§f2. Let the mod learn its contents",
+            "   §7Open the shulker (place it if needed) so the mod can scan the items inside.",
+            "   §7Also works when the box is in a chest — just open that chest.",
             "",
-            "§fItem Glow  §7— glowing outline on ground shulkers",
-            "§fMatch %    §7— show content match score in list",
-            "§fBlur       §7— blur background behind preview panel",
+            "§f3. Use the list",
+            "   §7This screen shows all marked shulkers grouped by location:",
+            "   §f  Orange §7= placed block  §f  Green §7= your inventory",
+            "   §f  Cyan   §7= external storage  §f  Purple §7= ender chest",
+            "   §f  Orange (item) §7= on the ground",
+            "   §7Click a row to preview its contents. Search by name or item.",
+            "   §7Matching items highlight §agreen§7 in the preview grid.",
             "",
-            "§7Search matches item names and shulker names.",
-            "§7Matching slots highlight green in the preview grid.",
+            "§fTop bar toggles:",
+            "   §fItem Glow §7— glowing outline on ground shulker items",
+            "   §fMatch %   §7— show content match score next to each row",
+            "   §fBlur      §7— blur the background behind the preview panel",
         )
         val padH = 10
         val padV = 8
