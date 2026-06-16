@@ -24,6 +24,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private var removeButtonBounds: IntArray? = null
     private var percentButtonBounds: IntArray? = null
     private var blurButtonBounds: IntArray? = null
+    private var glowButtonBounds: IntArray? = null
 
     private val leftPanelWidth: Int
         get() = (width * 0.22f).toInt().coerceIn(130, 220)
@@ -174,13 +175,17 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         val btnHeight = searchHeight
         val percentOn = WTFClient.isShowMatchPercentEnabled()
         val blurOn = WTFClient.isPreviewBlurEnabled()
+        val glowOn = WTFClient.isItemGlowEnabled()
 
         val blurX = width - 135
         val percentX = blurX - 5 - topBarButtonWidth
+        val glowX = percentX - 5 - topBarButtonWidth
 
+        glowButtonBounds = intArrayOf(glowX, 5, glowX + topBarButtonWidth, 5 + btnHeight)
         percentButtonBounds = intArrayOf(percentX, 5, percentX + topBarButtonWidth, 5 + btnHeight)
         blurButtonBounds = intArrayOf(blurX, 5, blurX + topBarButtonWidth, 5 + btnHeight)
 
+        renderToggleButton(graphics, glowButtonBounds!!, "Item Glow", glowOn, mouseX, mouseY)
         renderToggleButton(graphics, percentButtonBounds!!, "Match %", percentOn, mouseX, mouseY)
         renderToggleButton(graphics, blurButtonBounds!!, "Blur BG", blurOn, mouseX, mouseY)
     }
@@ -208,10 +213,17 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private fun renderLeftPanel(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
         val panelY = searchHeight + 5
         val panelHeight = height - panelY - 5
-        
+
         graphics.fill(0, panelY, leftPanelWidth, panelY + panelHeight, 0xFF1A1A1A.toInt())
 
-        var currentY = panelY
+        // Title bar
+        val titleBarH = 14
+        graphics.fill(0, panelY, leftPanelWidth, panelY + titleBarH, 0xFF252525.toInt())
+        val title = Component.literal("Shulker List")
+        val titleW = font.width(title)
+        graphics.text(font, title, (leftPanelWidth - titleW) / 2, panelY + 3, 0xFFCCCCCC.toInt(), false)
+
+        var currentY = panelY + titleBarH
 
         for (type in ShulkerSectionType.entries) {
             val section = sections[type] ?: continue
@@ -231,7 +243,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         }
 
         hoveredId = null
-        var hoverY = panelY
+        var hoverY = panelY + 14 // skip title bar
 
         for (type in ShulkerSectionType.entries) {
             val section = sections[type] ?: continue
@@ -294,13 +306,29 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         val contentHeight = 3 * (cellSize + cellPadding) + 10 + 52
         val gridStartY = (panelY + (panelHeight - contentHeight) / 2).coerceAtLeast(panelY + 10)
 
+        val q = searchQuery.lowercase()
+        val matchingSlots: Set<Int> = if (q.isNotEmpty()) {
+            val itemNames = searchNamesById[selected.id] ?: emptyList()
+            val allSlotNames = items.map { stack ->
+                if (stack.isEmpty) null else {
+                    val id = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+                    "${stack.displayName.string.lowercase()} $id ${id.removePrefix("minecraft:")}"
+                }
+            }
+            (0 until 27).filter { i ->
+                val name = allSlotNames.getOrNull(i) ?: return@filter false
+                fuzzyMatchScore(q, name) > 0f
+            }.toSet()
+        } else emptySet()
+
         for (i in 0 until 27) {
             val col = i % 9
             val row = i / 9
             val x = gridStartX + col * (cellSize + cellPadding)
             val y = gridStartY + row * (cellSize + cellPadding)
 
-            graphics.fill(x, y, x + cellSize, y + cellSize, 0xFF3A3A3A.toInt())
+            val slotBg = if (i in matchingSlots) 0xFF2A4A2A.toInt() else 0xFF3A3A3A.toInt()
+            graphics.fill(x, y, x + cellSize, y + cellSize, slotBg)
 
             val item = items.getOrNull(i)
             if (item != null && !item.isEmpty) {
@@ -436,6 +464,11 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         val button = mouseButtonEvent.button()
 
         if (button == 0) {
+            val gBounds = glowButtonBounds
+            if (gBounds != null && mouseX >= gBounds[0] && mouseX < gBounds[2] && mouseY >= gBounds[1] && mouseY < gBounds[3]) {
+                WTFClient.setItemGlowEnabled(!WTFClient.isItemGlowEnabled())
+                return true
+            }
             val pBounds = percentButtonBounds
             if (pBounds != null && mouseX >= pBounds[0] && mouseX < pBounds[2] && mouseY >= pBounds[1] && mouseY < pBounds[3]) {
                 WTFClient.setShowMatchPercentEnabled(!WTFClient.isShowMatchPercentEnabled())
@@ -471,7 +504,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         }
 
         if (button == 0 && mouseX < leftPanelWidth) {
-            val panelY = searchHeight + 5
+            val panelY = searchHeight + 5 + 14
             var currentY = panelY
 
             for (type in ShulkerSectionType.entries) {

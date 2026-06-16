@@ -212,7 +212,7 @@ object WTFClient : ClientModInitializer {
         match.from = "spawn:drop"
         log("transition: ${match.name} (${match.uuid.take(8)}) $oldState → item from=spawn:drop")
         if (match.happy) notify("§ainv§f → §7item§f §7(${match.name})§f")
-        if (match.happy) (entity as EntityAccessor).invokeSetSharedFlag(6, true)
+        if (match.happy && isItemGlowEnabled()) (entity as EntityAccessor).invokeSetSharedFlag(6, true)
     }
 
     // Server's ClientboundTakeItemEntityPacket: authoritative "entity was
@@ -1053,7 +1053,8 @@ object WTFClient : ClientModInitializer {
 
     data class UiSettings(
         val previewBlur: Boolean = true,
-        val showMatchPercent: Boolean = true
+        val showMatchPercent: Boolean = true,
+        val itemGlow: Boolean = true
     )
 
     private var uiSettings = UiSettings()
@@ -1092,6 +1093,13 @@ object WTFClient : ClientModInitializer {
 
     fun setShowMatchPercentEnabled(value: Boolean) {
         uiSettings = uiSettings.copy(showMatchPercent = value)
+        saveUiSettings()
+    }
+
+    fun isItemGlowEnabled(): Boolean = uiSettings.itemGlow
+
+    fun setItemGlowEnabled(value: Boolean) {
+        uiSettings = uiSettings.copy(itemGlow = value)
         saveUiSettings()
     }
 
@@ -1175,7 +1183,7 @@ object WTFClient : ClientModInitializer {
                         log("block -> item: found entity ${found.id} for shulker ${shulker.name} (uuid=${pending.uuid})")
                         if (shulker.happy) notify("§eblock§f → §7item§f §7(${shulker.name})§f")
                         claimedEntityIds.add(found.id)
-                        if (shulker.happy) (found as EntityAccessor).invokeSetSharedFlag(6, true)
+                        if (shulker.happy && isItemGlowEnabled()) (found as EntityAccessor).invokeSetSharedFlag(6, true)
                     }
                     iterator.remove()
                 }
