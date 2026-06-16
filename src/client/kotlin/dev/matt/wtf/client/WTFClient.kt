@@ -613,8 +613,33 @@ object WTFClient : ClientModInitializer {
             if (player != null && slot.container == player.inventory) continue
             val stack = slot.item
             if (stack.isEmpty || !isTrackableShulker(stack)) continue
-            if (getItemUUID(stack)?.let { it in trackedShulkers } == true) continue
             val pos = ledgerPosKey(slot.index)
+            val existingUUID = getItemUUID(stack)
+            if (existingUUID != null && existingUUID in trackedShulkers) {
+                // If this uuid is ALSO stamped on a player-inventory item, the same
+                // identity is present in two different locations simultaneously (old
+                // shared-uuid bad data). Chest item loses - strip it and block the
+                // uuid from being re-assigned to any chest slot this session so that
+                // the inv item remains the sole owner.
+                val alsoInInv = player != null && menu.slots.any { s ->
+                    s.container == player.inventory && getItemUUID(s.item) == existingUUID
+                }
+                if (alsoInInv) {
+                    stripItemUUID(stack)
+                    slotLedger.remove(pos)
+                    persistedChestLedger[chestLoc]?.let { if (it[pos] == existingUUID) it.remove(pos) }
+                    claimed.add(existingUUID)
+                    log("evict: uuid ${existingUUID.take(8)} also in player inv, stripped from chest slot ${slot.index}")
+                    continue
+                }
+                // Already stamped and no conflict — add to ledger so evictOrphanUUIDStamps
+                // knows the owner slot and doesn't strip it as an unclaimed duplicate.
+                if (pos !in slotLedger && existingUUID !in claimed) {
+                    slotLedger[pos] = existingUUID
+                    claimed.add(existingUUID)
+                }
+                continue
+            }
             if (pos in slotLedger) continue
             val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
             val hash = fingerprintFromItem(stack) ?: continue
@@ -757,6 +782,13 @@ object WTFClient : ClientModInitializer {
             resolved.add(item to uuid)
         }
 
+        // Rewrite the persisted ledger from scratch so stale slot→uuid entries
+        // from previous sessions (e.g. boxes that moved slots) can't accumulate
+        // and later be mistaken for valid hints.
+        persistedChestLedger[chestLoc] = resolved
+            .associate { (item, uuid) -> ledgerPosKey(item.slot.index) to uuid }
+            .toMutableMap()
+
         for ((item, uuid) in resolved) {
             val slot = item.slot
             val stack = item.stack
@@ -766,7 +798,6 @@ object WTFClient : ClientModInitializer {
             if (stackUUID != uuid) {
                 injectItemUUID(stack, uuid)
             }
-            persistedChestLedger.getOrPut(chestLoc) { mutableMapOf() }[ledgerPosKey(slot.index)] = uuid
 
             val entry = trackedShulkers[uuid]
             if (entry != null) {
@@ -953,35 +984,6 @@ object WTFClient : ClientModInitializer {
             if (hashMatch != null) {
                 log("chest resolve: hash-matched $stackName to tracked UUID ${hashMatch.uuid}")
                 return hashMatch.uuid
-            }
-        }
-
-        // Name matching is only meaningful for boxes with a real CUSTOM_NAME -
-        // default-named ("Shulker Box") boxes share that name with every other
-        // unnamed box, so matching on it would steal a tracked uuid from the
-        // wrong physical stack.
-        if (hasCustomName) {
-            val nameCandidates = trackedShulkers.values.filter {
-                it.uuid !in alreadyResolved &&
-                    it.happy &&
-                    it.type == stackType &&
-                    it.name == stackName &&
-                    slotEligible(it)
-            }
-            // A custom name is NOT a unique identity - several boxes can share it.
-            // When more than one tracked box carries this name, name alone can't
-            // say which physical box this is, so require an exact slot match;
-            // otherwise marking one would stamp the same uuid onto every same-named
-            // box (and the icon would appear on all of them). Only a uniquely-named
-            // box may be re-linked by name with no slot.
-            val nameMatch = when {
-                nameCandidates.size == 1 -> nameCandidates.firstOrNull()
-                slotIndex >= 0 -> nameCandidates.firstOrNull { it.slotIndex == slotIndex }
-                else -> null
-            }
-            if (nameMatch != null) {
-                log("chest resolve: name-matched $stackName to tracked UUID ${nameMatch.uuid}")
-                return nameMatch.uuid
             }
         }
 
@@ -1807,7 +1809,7 @@ object WTFClient : ClientModInitializer {
                     handleShulkerScreenClosed(screen)
                 }
             }
-            if (screen is AbstractContainerScreenAccessor) {
+            if (screen is AbstractContainerScreenAccessor && screen !is ShulkerBoxScreen) {
                 handleChestScreen(mc, screen)
                 ScreenEvents.remove(screen).register {
                     handleChestClosed(screen)
@@ -1826,6 +1828,16 @@ object WTFClient : ClientModInitializer {
         }
     }
 
+    // Single source of truth for "should this slot show the marker icon".
+    // Check stamp first (fast path), then slotLedger fallback (covers cases
+    // where the stamp was stripped or never applied, e.g. multiplayer reopen
+    // before ContainerSetContent, or eviction edge-cases).
+    fun isSlotMarked(stack: ItemStack, slotIndex: Int): Boolean {
+        if (stack.isEmpty || !isTrackableShulker(stack)) return false
+        val uuid = getItemUUID(stack) ?: slotLedger[ledgerPosKey(slotIndex)] ?: return false
+        return trackedShulkers[uuid]?.happy == true
+    }
+
     private fun renderHappyMarkers(screen: Screen, graphics: GuiGraphicsExtractor) {
         if (markerIcon == "none") return
         val container = screen as? net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*> ?: return
@@ -1833,9 +1845,7 @@ object WTFClient : ClientModInitializer {
         val font = Minecraft.getInstance().font
         for (slot in container.menu.slots) {
             val stack = slot.item
-            if (stack.isEmpty || !isTrackableShulker(stack)) continue
-            val uuid = getItemUUID(stack) ?: continue
-            if (trackedShulkers[uuid]?.happy != true) continue
+            if (!isSlotMarked(stack, slot.index)) continue
             val x = accessor.leftPos + slot.x
             val y = accessor.topPos + slot.y
             val pose = graphics.pose()
@@ -2176,8 +2186,12 @@ object WTFClient : ClientModInitializer {
             // empty-box hashes - shared by every unnamed empty box of this
             // color, so matching on them would stamp two distinct physical
             // stacks with the same uuid (see genericEmptyHash).
-            val match = if (hash == genericEmptyHash(stackType)) null else trackedShulkers.values.firstOrNull {
-                it.uuid !in foundUUIDs && it.contentHash == hash && (it.state == "inv" || it.state == "item" || it.state == "enderchest" || it.state == "block")
+            val match = if (hash == genericEmptyHash(stackType)) null else {
+                val hashCandidates = trackedShulkers.values.filter {
+                    it.uuid !in foundUUIDs && it.contentHash == hash && (it.state == "inv" || it.state == "item" || it.state == "enderchest" || it.state == "block")
+                }
+                // Prefer candidate last seen at this exact slot so same-hash boxes don't swap identity across scans.
+                hashCandidates.firstOrNull { it.coords == ss.second } ?: hashCandidates.firstOrNull()
             }
 
             if (match != null) {
@@ -2226,10 +2240,13 @@ object WTFClient : ClientModInitializer {
                 }
 
                 // Ex-inv / ender recovery: re-link entries that reappeared in inventory
-                val recoveryMatch = if (hash == genericEmptyHash(stackType)) null else trackedShulkers.values.firstOrNull {
-                    it.uuid !in foundUUIDs &&
-                        (it.state == "ex-inv" || it.state == "enderchest") &&
-                        it.contentHash == hash
+                val recoveryMatch = if (hash == genericEmptyHash(stackType)) null else {
+                    val recoveryCandidates = trackedShulkers.values.filter {
+                        it.uuid !in foundUUIDs &&
+                            (it.state == "ex-inv" || it.state == "enderchest") &&
+                            it.contentHash == hash
+                    }
+                    recoveryCandidates.firstOrNull { it.coords == ss.second } ?: recoveryCandidates.firstOrNull()
                 }
 
                 if (recoveryMatch != null) {
@@ -2727,13 +2744,16 @@ object WTFClient : ClientModInitializer {
                 val ledgerUUID = slotLedger[thisPos]
                 if (ledgerUUID != null && ledgerUUID != uuid) {
                     stripItemUUID(stack)
+                    slotLedger.remove(thisPos)
                     log("evict: orphan uuid ${uuid.take(8)} at slot $idx (ledger has ${ledgerUUID.take(8)})")
                 }
             } else {
                 val ownerPos = ledgerOwner[uuid]
                 for ((idx, stack) in slots) {
-                    if (ledgerPosKey(idx) != ownerPos) {
+                    val pos = ledgerPosKey(idx)
+                    if (pos != ownerPos) {
                         stripItemUUID(stack)
+                        if (slotLedger[pos] == uuid) slotLedger.remove(pos)
                         log("evict: duplicate uuid ${uuid.take(8)} at slot $idx (owner=$ownerPos)")
                     }
                 }
@@ -2831,7 +2851,9 @@ object WTFClient : ClientModInitializer {
                 // close/reopen keeps the marker exactly where it was marked.
                 val chestLoc = if (openChestIsEnderChest) "Ender Chest"
                     else mc.level?.let { lv -> openChestPos?.let { blockLocation(it, lv) } } ?: ""
-                val pinned = (slotLedger[posKey] ?: persistedChestLedger[chestLoc]?.get(posKey))
+                val ledgerValues = slotLedger.values
+                val pinned = (slotLedger[posKey]
+                    ?: persistedChestLedger[chestLoc]?.get(posKey)?.takeIf { it !in ledgerValues })
                     ?.takeIf {
                         it in trackedShulkers &&
                             ledgerEntryMatchesStack(trackedShulkers[it]!!, contentHash, displayName, shulkerType, hasCustomName)
