@@ -1215,7 +1215,7 @@ object WTFClient : ClientModInitializer {
                     // A "block" entry can also match if the drop spawned at its
                     // block position (broken by another player, explosion, ...).
                     fun matchableState(e: ShulkerState, entity: ItemEntity): Boolean {
-                        if (e.state == "inv" || e.state == "ex-inv") return true
+                        if (e.state == "inv" || e.state == "ex-inv" || e.state == "enderchest") return true
                         if (e.state == "block") {
                             val c = parseVec3(e.coords) ?: return false
                             return entity.distanceToSqr(c.first + 0.5, c.second + 0.5, c.third + 0.5) < 9.0
@@ -1324,6 +1324,10 @@ object WTFClient : ClientModInitializer {
                         itemVanishInvCount.remove(shulker.uuid)
                         shulker.coords = "${entity.x},${entity.y},${entity.z}"
                         shulker.last_update_time = System.currentTimeMillis().toString()
+                        if (shulker.happy) {
+                            val glowing = isItemGlowEnabled()
+                            (entity as EntityAccessor).invokeSetSharedFlag(6, glowing)
+                        }
                         continue
                     }
                     // Entity gone. If the player picked it up, the inventory scan
