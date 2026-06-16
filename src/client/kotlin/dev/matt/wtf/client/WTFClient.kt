@@ -617,6 +617,7 @@ object WTFClient : ClientModInitializer {
             slotLedger[pos] = uuid
             claimed.add(uuid)
             injectItemUUID(stack, uuid)
+            trackedShulkers[uuid]?.let { it.contentHash = hash }
             log("ledger: chest seed $pos -> ${uuid.take(8)} (hash)")
         }
     }
