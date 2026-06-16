@@ -8,6 +8,7 @@ import net.minecraft.network.chat.Component
 class ShulkerListScreen(private val entries: List<ShulkerEntry>) : Screen(Component.literal("Happy Shulkers")) {
     private var searchField: EditBox? = null
     private var scrollOffset = 0
+    private var scrollAccum = 0.0
     private val entryHeight = 30
     private val listStartY = 40
 
@@ -50,6 +51,7 @@ class ShulkerListScreen(private val entries: List<ShulkerEntry>) : Screen(Compon
                         "§6In Transit (Missing)§r"
                     }
                 }
+                "enderchest" -> entry.location
                 "ex-inv" -> {
                     if (entry.lastKnown) entry.location else "In chest: ${entry.location}"
                 }
@@ -65,11 +67,21 @@ class ShulkerListScreen(private val entries: List<ShulkerEntry>) : Screen(Compon
                 Component.literal("No matching shulkers")
             graphics.text(font, hint, width / 2 - font.width(hint) / 2, height / 2, 0xFF808080.toInt(), false)
         }
+
+        // Cover the header zone so list items don't visually bleed over the search field.
+        graphics.fill(0, 0, width, listStartY, 0xFF000000.toInt())
     }
 
     override fun mouseScrolled(mouseX: Double, mouseY: Double, scrollX: Double, scrollY: Double): Boolean {
-        val maxVisible = (height - listStartY) / entryHeight
-        scrollOffset = (scrollOffset - scrollY.toInt()).coerceIn(0, maxOf(0, entries.size - maxVisible))
+        scrollAccum += scrollY
+        val steps = scrollAccum.toInt()
+        if (steps != 0) {
+            scrollAccum -= steps
+            val query = searchField?.value ?: ""
+            val filteredSize = if (query.isEmpty()) entries.size else entries.count { fuzzyMatch(query, it.name.string) }
+            val maxVisible = (height - listStartY) / entryHeight
+            scrollOffset = (scrollOffset - steps).coerceIn(0, maxOf(0, filteredSize - maxVisible))
+        }
         return true
     }
 

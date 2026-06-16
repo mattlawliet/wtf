@@ -246,6 +246,19 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             if (currentY >= panelY + panelHeight) break
         }
 
+        // Second pass: re-render section headers on top so scrolling entries
+        // don't bleed over them.
+        var headerY = panelY + titleBarH
+        for (type in ShulkerSectionType.entries) {
+            val section = sections[type] ?: continue
+            section.renderHeader(graphics, font, 0, headerY, leftPanelWidth)
+            headerY += ShulkerSection.HEADER_HEIGHT
+            if (!section.isCollapsed) {
+                headerY += minOf(section.getTotalContentHeight(), height - headerY - 5)
+            }
+            if (headerY >= panelY + panelHeight) break
+        }
+
         hoveredId = null
         var hoverY = panelY + 14 // skip title bar
 
@@ -387,6 +400,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
                 } else loc
             }
             "inv" -> slotLabel(selected.location)
+            "enderchest" -> selected.location
             "item" -> "In Transit: ${selected.location}"
             "ex-inv" -> {
                 val rawLoc = selected.location
@@ -584,7 +598,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
                 val section = sections[type] ?: continue
                 val sectionEnd = currentY + section.getTotalContentHeight()
                 if (mouseY >= currentY && mouseY < sectionEnd) {
-                    section.scroll((-verticalAmount).toInt())
+                    section.scroll((-verticalAmount * ShulkerSection.ROW_HEIGHT).toInt())
                     return true
                 }
                 currentY = sectionEnd
