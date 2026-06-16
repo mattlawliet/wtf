@@ -229,36 +229,6 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
 
         var currentY = panelY + titleBarH
 
-        if (allEntries.isEmpty()) {
-            val keyName = WTFClient.getToggleHappyKeyDisplayName()
-            val emptyLines = if (keyName != null) listOf(
-                "No marked shulkers yet.",
-                "",
-                "Hold a shulker box,",
-                "press §e$keyName§7 to mark it.",
-                "",
-                "Open any chest or inventory",
-                "to track contents.",
-                "",
-                "§7See §f?§7 (bottom-right) for help."
-            ) else listOf(
-                "No marked shulkers yet.",
-                "",
-                "Set a key for",
-                "§ekey.wtf.toggle_happy§7",
-                "in Controls to get started.",
-                "",
-                "§7See §f?§7 (bottom-right) for help."
-            )
-            val startY = currentY + (panelHeight - titleBarH - emptyLines.size * (font.lineHeight + 2)) / 2
-            emptyLines.forEachIndexed { i, line ->
-                val comp = Component.literal(line)
-                val lw = font.width(comp)
-                graphics.text(font, comp, (leftPanelWidth - lw) / 2, startY + i * (font.lineHeight + 2), 0xFF888888.toInt(), false)
-            }
-            return
-        }
-
         for (type in ShulkerSectionType.entries) {
             val section = sections[type] ?: continue
 
@@ -318,12 +288,37 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
 
         val selected = allEntries.find { it.id == selectedId }
         if (selected == null) {
-            val hintY = panelY + panelHeight / 2 - 4
+            val keyName = WTFClient.getToggleHappyKeyDisplayName()
+            val emptyLines = if (allEntries.isEmpty()) {
+                if (keyName != null) listOf(
+                    "§fNo marked shulkers yet.",
+                    "",
+                    "§7Hold a shulker box and press §e$keyName§7 to mark it.",
+                    "§7Also works on placed shulker blocks you're looking at.",
+                    "",
+                    "§7Open any chest or inventory to track contents.",
+                    "",
+                    "§7See §f?§7 (bottom-right) for more help."
+                ) else listOf(
+                    "§fNo marked shulkers yet.",
+                    "",
+                    "§7Bind §ekey.wtf.toggle_happy§7 in Controls,",
+                    "§7then hold a shulker and press it to mark.",
+                    "",
+                    "§7See §f?§7 (bottom-right) for more help."
+                )
+            } else listOf("§7Select a shulker from the list.")
+            val lineH = font.lineHeight + 3
+            val totalH = emptyLines.size * lineH
+            val startY = panelY + (panelHeight - totalH) / 2
             if (blurred) {
-                graphics.fill(previewX - 3, hintY - 10, width - 3, hintY + 14, 0xFF2A2A2A.toInt())
+                graphics.fill(previewX - 3, startY - 8, width - 3, startY + totalH + 8, 0xFF2A2A2A.toInt())
             }
-            val hint = Component.literal("Select a shulker")
-            graphics.text(font, hint, previewX, hintY, 0xFF808080.toInt(), true)
+            emptyLines.forEachIndexed { i, line ->
+                val comp = Component.literal(line)
+                val lw = font.width(comp)
+                graphics.text(font, comp, previewX + (previewWidth - lw) / 2, startY + i * lineH, 0xFF888888.toInt(), false)
+            }
             removeButtonBounds = null
             return
         }
