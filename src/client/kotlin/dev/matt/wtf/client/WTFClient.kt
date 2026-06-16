@@ -1058,6 +1058,14 @@ object WTFClient : ClientModInitializer {
     )
 
     private var uiSettings = UiSettings()
+    var toggleHappyKeyBinding: net.minecraft.client.KeyMapping? = null
+
+    fun getToggleHappyKeyDisplayName(): String? {
+        val kb = toggleHappyKeyBinding ?: return null
+        val s = kb.saveString()
+        if (s == "NONE" || s.isEmpty()) return null
+        return try { InputConstants.getKey(s).displayName.string } catch (_: Exception) { null }
+    }
 
     private fun getUiSettingsFile(): File {
         val baseDir = Minecraft.getInstance().gameDirectory
@@ -1112,10 +1120,11 @@ object WTFClient : ClientModInitializer {
         )
         KeyMappingHelper.registerKeyMapping(keyBinding)
 
-        val toggleHappyKeyBinding = net.minecraft.client.KeyMapping(
+        val toggleHappyKeyBindingLocal = net.minecraft.client.KeyMapping(
             "key.wtf.toggle_happy", InputConstants.Type.KEYSYM, -1, category
         )
-        KeyMappingHelper.registerKeyMapping(toggleHappyKeyBinding)
+        toggleHappyKeyBinding = toggleHappyKeyBindingLocal
+        KeyMappingHelper.registerKeyMapping(toggleHappyKeyBindingLocal)
 
         // KeyMapping.click()/isDown are never updated while any Screen is open
         // (Minecraft's KeyboardHandler returns early for non-debug keys in that
@@ -1124,7 +1133,7 @@ object WTFClient : ClientModInitializer {
         ScreenEvents.AFTER_INIT.register { _, screen, _, _ ->
             if (screen is net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>) {
                 ScreenKeyboardEvents.afterKeyPress(screen).register { _, keyEvent ->
-                    if (toggleHappyKeyBinding.matches(keyEvent)) {
+                    if (toggleHappyKeyBinding?.matches(keyEvent) == true) {
                         toggleHappyForHoveredSlot()
                     }
                 }
@@ -1136,12 +1145,10 @@ object WTFClient : ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             while (keyBinding.consumeClick()) {
                 val entries = resolveHappyShulkers()
-                if (entries.isNotEmpty()) {
-                    client.setScreen(ShulkerGridScreen(entries))
-                }
+                client.setScreen(ShulkerGridScreen(entries))
             }
 
-            while (toggleHappyKeyBinding.consumeClick()) {
+            while (toggleHappyKeyBinding?.consumeClick() == true) {
                 toggleHappyForHoveredSlot()
             }
 

@@ -229,6 +229,36 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
 
         var currentY = panelY + titleBarH
 
+        if (allEntries.isEmpty()) {
+            val keyName = WTFClient.getToggleHappyKeyDisplayName()
+            val emptyLines = if (keyName != null) listOf(
+                "No marked shulkers yet.",
+                "",
+                "Hold a shulker box,",
+                "press §e$keyName§7 to mark it.",
+                "",
+                "Open any chest or inventory",
+                "to track contents.",
+                "",
+                "§7See §f?§7 (bottom-right) for help."
+            ) else listOf(
+                "No marked shulkers yet.",
+                "",
+                "Set a key for",
+                "§ekey.wtf.toggle_happy§7",
+                "in Controls to get started.",
+                "",
+                "§7See §f?§7 (bottom-right) for help."
+            )
+            val startY = currentY + (panelHeight - titleBarH - emptyLines.size * (font.lineHeight + 2)) / 2
+            emptyLines.forEachIndexed { i, line ->
+                val comp = Component.literal(line)
+                val lw = font.width(comp)
+                graphics.text(font, comp, (leftPanelWidth - lw) / 2, startY + i * (font.lineHeight + 2), 0xFF888888.toInt(), false)
+            }
+            return
+        }
+
         for (type in ShulkerSectionType.entries) {
             val section = sections[type] ?: continue
 
@@ -608,10 +638,15 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     }
 
     private fun renderInfoOverlay(graphics: GuiGraphicsExtractor) {
+        val toggleKey = WTFClient.getToggleHappyKeyDisplayName()
+        val toggleLine = if (toggleKey != null)
+            "§7Press §f$toggleKey §7in-game to mark/unmark a shulker."
+        else
+            "§cSet a key for §ekey.wtf.toggle_happy§c in Controls."
         val lines = listOf(
             "§eWTF Shulker Tracker",
             "",
-            "§7Press §f` §7(grave) §fin-game §7to mark/unmark a shulker.",
+            toggleLine,
             "§7Open any §finventory §7or §fchest §7to scan & track contents.",
             "",
             "§fTracked across:  §7Inventory · Chest · Ender Chest · Ground",
