@@ -1992,7 +1992,7 @@ object WTFClient : ClientModInitializer {
             // color, so matching on them would stamp two distinct physical
             // stacks with the same uuid (see genericEmptyHash).
             val match = if (hash == genericEmptyHash(stackType)) null else trackedShulkers.values.firstOrNull {
-                it.uuid !in foundUUIDs && it.contentHash == hash && (it.state == "inv" || it.state == "item")
+                it.uuid !in foundUUIDs && it.contentHash == hash && (it.state == "inv" || it.state == "item" || it.state == "enderchest")
             }
 
             if (match != null) {
@@ -2013,7 +2013,7 @@ object WTFClient : ClientModInitializer {
                 val nameMatch = trackedShulkers.values.firstOrNull {
                     it.uuid !in foundUUIDs &&
                         it.happy &&
-                        (it.state == "inv" || it.state == "item") &&
+                        (it.state == "inv" || it.state == "item" || it.state == "enderchest") &&
                         it.type == stackType &&
                         it.name == stackName
                 }
@@ -2034,10 +2034,10 @@ object WTFClient : ClientModInitializer {
                     continue
                 }
 
-                // Ex-inv recovery: re-link ex-inv entries that reappeared in inventory
+                // Ex-inv / ender recovery: re-link entries that reappeared in inventory
                 val recoveryMatch = if (hash == genericEmptyHash(stackType)) null else trackedShulkers.values.firstOrNull {
                     it.uuid !in foundUUIDs &&
-                        it.state == "ex-inv" &&
+                        (it.state == "ex-inv" || it.state == "enderchest") &&
                         it.contentHash == hash
                 }
 

@@ -38,6 +38,10 @@ class ShulkerListRow(
             ShulkerSectionType.ENDERCHEST -> 0xFFAA55FF.toInt()
         }
 
+        if (isSelected) {
+            graphics.fill(x, y, x + 2, y + BASE_ROW_HEIGHT, textColor)
+        }
+
         graphics.item(stack, x + 2, y + (BASE_ROW_HEIGHT - SLOT_SIZE) / 2)
 
         val displayName = name.string

@@ -25,6 +25,8 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private var percentButtonBounds: IntArray? = null
     private var blurButtonBounds: IntArray? = null
     private var glowButtonBounds: IntArray? = null
+    private var infoBounds: IntArray? = null
+    private var showInfo = false
 
     private val leftPanelWidth: Int
         get() = (width * 0.22f).toInt().coerceIn(130, 220)
@@ -33,7 +35,8 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private val topBarButtonWidth = 70
 
     override fun init() {
-        val field = EditBox(font, 10, 5, width - 230, searchHeight,
+        // glowX = width-285; leave 5px gap on left and right of search bar
+        val field = EditBox(font, 5, 5, width - 295, searchHeight,
             Component.literal("Search shulkers..."))
         field.setResponder { text ->
             searchQuery = text
@@ -155,9 +158,8 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             sections[ShulkerSectionType.ENDERCHEST] = ShulkerSection(ShulkerSectionType.ENDERCHEST, enderChestEntries)
         }
 
-        if (selectedId == null && sections.values.any { it.entries.isNotEmpty() }) {
-            selectedId = sections.values.firstNotNullOfOrNull { section -> section.entries.firstOrNull()?.id }
-        } else if (selectedId != null && !allEntries.any { it.id == selectedId }) {
+        val allSectionIds = sections.values.flatMap { s -> s.entries.map { it.id } }.toSet()
+        if (selectedId !in allSectionIds) {
             selectedId = sections.values.firstNotNullOfOrNull { section -> section.entries.firstOrNull()?.id }
         }
     }
@@ -169,6 +171,8 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         renderPreviewPanel(graphics, mouseX, mouseY)
         renderPreviewGridTooltip(graphics, mouseX, mouseY)
         renderTopBarButtons(graphics, mouseX, mouseY)
+        renderInfoButton(graphics, mouseX, mouseY)
+        if (showInfo) renderInfoOverlay(graphics)
     }
 
     private fun renderTopBarButtons(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
@@ -211,7 +215,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private operator fun IntArray.component4() = this[3]
 
     private fun renderLeftPanel(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
-        val panelY = searchHeight + 5
+        val panelY = searchHeight + 10
         val panelHeight = height - panelY - 5
 
         graphics.fill(0, panelY, leftPanelWidth, panelY + panelHeight, 0xFF1A1A1A.toInt())
@@ -271,7 +275,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     }
 
     private fun renderPreviewPanel(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
-        val panelY = searchHeight + 5
+        val panelY = searchHeight + 10
         val panelHeight = height - panelY - 5
         
         val previewX = leftPanelWidth + 7
@@ -433,14 +437,16 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             ?: selected.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems)
             ?: return
 
-        val panelY = searchHeight + 5
+        val panelY = searchHeight + 10
         val previewX = leftPanelWidth + 7
         val previewWidth = width - previewX - 7
 
         val cellSize = 22
         val cellPadding = 2
         val gridStartX = previewX + (previewWidth - 9 * (cellSize + cellPadding)) / 2
-        val gridStartY = panelY + 10
+        val panelHeight = height - panelY - 5
+        val contentHeight = 3 * (cellSize + cellPadding) + 10 + 52
+        val gridStartY = (panelY + (panelHeight - contentHeight) / 2).coerceAtLeast(panelY + 10)
 
         val gridWidth = 9 * (cellSize + cellPadding)
         val gridHeight = 3 * (cellSize + cellPadding)
@@ -481,6 +487,15 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             }
         }
 
+        if (button == 0) {
+            val iBounds = infoBounds
+            if (iBounds != null && mouseX >= iBounds[0] && mouseX < iBounds[2] && mouseY >= iBounds[1] && mouseY < iBounds[3]) {
+                showInfo = !showInfo
+                return true
+            }
+            if (showInfo) { showInfo = false; return true }
+        }
+
         if (button == 0 && mouseX >= leftPanelWidth) {
             val bounds = removeButtonBounds
             val selected = allEntries.find { it.id == selectedId }
@@ -504,7 +519,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         }
 
         if (button == 0 && mouseX < leftPanelWidth) {
-            val panelY = searchHeight + 5 + 14
+            val panelY = searchHeight + 10 + 14
             var currentY = panelY
 
             for (type in ShulkerSectionType.entries) {
@@ -577,6 +592,51 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             }
         }
         return if (qi == q.length) matched.toFloat() / t.length else 0f
+    }
+
+    private fun renderInfoButton(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
+        val bw = 18
+        val bh = 14
+        val bx = width - bw - 4
+        val by = height - bh - 4
+        infoBounds = intArrayOf(bx, by, bx + bw, by + bh)
+        val hovered = mouseX in bx..(bx + bw) && mouseY in by..(by + bh)
+        val bg = if (showInfo || hovered) 0xFF555555.toInt() else 0xFF333333.toInt()
+        graphics.fill(bx, by, bx + bw, by + bh, bg)
+        val label = Component.literal("?")
+        graphics.text(font, label, bx + (bw - font.width(label)) / 2, by + 3, 0xFFCCCCCC.toInt(), false)
+    }
+
+    private fun renderInfoOverlay(graphics: GuiGraphicsExtractor) {
+        val lines = listOf(
+            "§eWTF Shulker Tracker",
+            "",
+            "§7Press §f` §7(grave) §fin-game §7to mark/unmark a shulker.",
+            "§7Open any §finventory §7or §fchest §7to scan & track contents.",
+            "",
+            "§fTracked across:  §7Inventory · Chest · Ender Chest · Ground",
+            "",
+            "§fItem Glow  §7— glowing outline on ground shulkers",
+            "§fMatch %    §7— show content match score in list",
+            "§fBlur       §7— blur background behind preview panel",
+            "",
+            "§7Search matches item names and shulker names.",
+            "§7Matching slots highlight green in the preview grid.",
+        )
+        val padH = 10
+        val padV = 8
+        val lineH = font.lineHeight + 2
+        val textW = lines.maxOf { font.width(Component.translatable(it).string.replace(Regex("§."), "")) }
+            .coerceAtLeast(lines.maxOf { font.width(it.replace(Regex("§."), "")) })
+        val boxW = textW + padH * 2
+        val boxH = lines.size * lineH + padV * 2
+        val bx = (width - boxW) / 2
+        val by = (height - boxH) / 2
+        graphics.fill(bx - 2, by - 2, bx + boxW + 2, by + boxH + 2, 0xFF111111.toInt())
+        graphics.fill(bx, by, bx + boxW, by + boxH, 0xFF222222.toInt())
+        lines.forEachIndexed { i, line ->
+            graphics.text(font, Component.literal(line), bx + padH, by + padV + i * lineH, 0xFFFFFFFF.toInt(), false)
+        }
     }
 
     override fun isPauseScreen() = true
