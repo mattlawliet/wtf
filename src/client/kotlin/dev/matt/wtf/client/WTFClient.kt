@@ -304,6 +304,7 @@ object WTFClient : ClientModInitializer {
     private var postJoinGraceTicks: Int = 0
 
 
+    private var openShulkerKey: String? = null
     private var openChestPos: BlockPos? = null
     private var openChestScreenTick: Int = 0
     // Ender chest is a per-player inventory, not a place - contents are
@@ -389,7 +390,16 @@ object WTFClient : ClientModInitializer {
         slotLedger.clear()
         ledgerMenuId = menu.containerId
         val claimed = mutableSetOf<String>()
-        for ((pos, stack) in captureMenuShulkers(menu, copy = false)) {
+        val player = Minecraft.getInstance().player
+        for (slot in menu.slots) {
+            // Player inventory slots share a slot-index space with chest slots.
+            // Including them causes ledgerOwner to point player-inv uuids at
+            // player slot keys, which then makes evictOrphanUUIDStamps strip
+            // every chest slot carrying the same uuid (e.g. all Kitt boxes).
+            if (player != null && slot.container == player.inventory) continue
+            val stack = slot.item
+            if (stack.isEmpty || !isShulkerItem(stack)) continue
+            val pos = ledgerPosKey(slot.index)
             val uuid = getItemUUID(stack)?.takeIf { it in trackedShulkers && it !in claimed } ?: continue
             slotLedger[pos] = uuid
             claimed.add(uuid)
@@ -1214,6 +1224,16 @@ object WTFClient : ClientModInitializer {
     fun isShowMatchPercentEnabled(): Boolean = uiSettings.showMatchPercent
 
     fun isDebugModeEnabled(): Boolean = debugMode
+    fun isDebugMode(): Boolean = debugMode
+
+    fun clearAllRecords() {
+        trackedShulkers.clear()
+        slotLedger.clear()
+        persistedChestLedger.clear()
+        transitOrder.clear()
+        save()
+        log("clearAllRecords: all records wiped")
+    }
 
     fun setShowMatchPercentEnabled(value: Boolean) {
         uiSettings = uiSettings.copy(showMatchPercent = value)
@@ -1908,6 +1928,8 @@ object WTFClient : ClientModInitializer {
             log("handleShulkerScreen: matched key=$currentKey")
         }
 
+        openShulkerKey = currentKey
+
         val currentEntry = currentKey?.let { trackedShulkers[it] }
         val isHappy = currentEntry?.happy ?: false
 
@@ -1926,9 +1948,13 @@ object WTFClient : ClientModInitializer {
         }
 
         val button = Button.builder(Component.literal(if (isHappy) "\u263A" else "\u2639")) { btn ->
+            // Re-fingerprint at click time: the container may have been empty at
+            // handleShulkerScreen time (pre-sync) but is populated by click time.
+            val currentHash = fingerprintContainer(container, shulkerType, be?.components()?.get(DataComponents.CUSTOM_NAME))
+            val currentlyHappy = trackedShulkers[currentKey]?.happy ?: false
             // Empty, unnamed boxes share the generic hash and can't be tracked
             // unambiguously - allow them only once named (unless already marked).
-            if (!isHappy && contentHash == genericEmptyHash(shulkerType)) {
+            if (!currentlyHappy && currentHash == genericEmptyHash(shulkerType)) {
                 notify("\u00A7ccan't mark an empty unnamed box\u00A7f - name it or add contents first")
                 return@builder
             }
@@ -2000,6 +2026,7 @@ object WTFClient : ClientModInitializer {
     }
 
     private fun handleShulkerScreenClosed(screen: ShulkerBoxScreen) {
+        openShulkerKey = null
         val mc = Minecraft.getInstance()
         val level = mc.level ?: return
         val player = mc.player ?: return
@@ -2051,6 +2078,18 @@ object WTFClient : ClientModInitializer {
         }
         if (!inv.carried.isEmpty && isTrackableShulker(inv.carried)) {
             inventoryShulkers.add(Triple(inv.carried, "cursor", fingerprintFromItem(inv.carried) ?: ""))
+        }
+
+        // Evict duplicate wtf:uuid stamps in inventory (pre-1.4.9 bad data).
+        // If the same uuid appears on >1 stack, strip it from all but the first
+        // (lowest slot index wins; entry.coords will confirm the real slot).
+        val invUUIDSeen = mutableSetOf<String>()
+        for (ss in inventoryShulkers) {
+            val uuid = getItemUUID(ss.first) ?: continue
+            if (!invUUIDSeen.add(uuid)) {
+                stripItemUUID(ss.first)
+                log("evict: duplicate inv uuid ${uuid.take(8)} stripped from ${ss.second}")
+            }
         }
 
         val foundUUIDs = mutableSetOf<String>()
@@ -2723,6 +2762,30 @@ object WTFClient : ClientModInitializer {
     private fun toggleHappyForHoveredSlot() {
         val mc = Minecraft.getInstance()
         val screen = mc.screen
+
+        // When a placed shulker block is open, the keybind should toggle the
+        // block itself - not whatever content slot the cursor happens to hover.
+        if (screen is ShulkerBoxScreen) {
+            val key = openShulkerKey
+            if (key == null) {
+                notify("§cshulker not yet tracked§f - use the button or wait a moment")
+                return
+            }
+            val entry = trackedShulkers[key]
+            val newHappy = !(entry?.happy ?: false)
+            if (entry == null) {
+                notify("§cshulker entry missing§f")
+                return
+            }
+            entry.happy = newHappy
+            entry.last_update_time = System.currentTimeMillis().toString()
+            entry.from = "keybind-toggle"
+            if (newHappy) notify("§a${getMarkerIcon()}§f marked: §e${entry.name}§f")
+            else notify("§7☹§f unmarked: §e${entry.name}§f")
+            save()
+            return
+        }
+
         if (screen !is net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>) {
             return
         }
@@ -2779,10 +2842,13 @@ object WTFClient : ClientModInitializer {
                 if (getItemUUID(stack) != resolved) injectItemUUID(stack, resolved)
                 resolved
             } else {
-                val claimed = slotLedger.values.toSet()
-                resolveTrackedChestStack(contentHash, displayName, shulkerType, hasCustomName, claimed)
-                    ?.also { injectItemUUID(stack, it) }
-                    ?: ensureItemUUID(stack)
+                // Inventory slot: performInventoryScan already re-links boxes via
+                // hash/transit match before the user presses the key. If the stack
+                // still has no uuid at this point, it's genuinely new - mint one.
+                // Do NOT call resolveTrackedChestStack here: name-match would steal
+                // a tracked entry from a DIFFERENT physical box with the same name
+                // (e.g. marking Kitt #2 re-links it to Kitt #1's uuid → both toggle).
+                ensureItemUUID(stack)
             }
         }
 

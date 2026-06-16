@@ -78,17 +78,39 @@ class ShulkerSection(
 
     fun renderEntries(graphics: GuiGraphicsExtractor, font: Font, x: Int, y: Int, width: Int, visibleHeight: Int, hoveredId: String?, selectedId: String?) {
         if (isCollapsed) return
-        
+
+        val indicatorH = 10
         val startRow = (scrollOffset / ROW_HEIGHT).coerceAtLeast(0)
-        val endRow = minOf(entries.size, startRow + (visibleHeight / ROW_HEIGHT) + 2)
+        val showTop = startRow > 0
 
-        for (i in startRow until endRow) {
-            val entry = entries[i]
-            val entryY = y + i * ROW_HEIGHT - scrollOffset
+        // Reserve indicator space so entries don't overlap the indicator bars.
+        val contentY = if (showTop) y + indicatorH else y
+        val bottomBound = y + visibleHeight
 
-            if (entryY + ROW_HEIGHT < y || entryY > y + visibleHeight) continue
+        // Count fully visible rows in the adjusted content zone.
+        val availableForEntries = bottomBound - contentY
+        val maxVisibleRows = availableForEntries / ROW_HEIGHT
+        val endRow = minOf(entries.size, startRow + maxVisibleRows)
+        val hiddenBelow = entries.size - endRow
+        val showBottom = hiddenBelow > 0
+        // When showing the bottom indicator, lose one row to make room.
+        val adjustedEndRow = if (showBottom) maxOf(startRow, endRow - 1) else endRow
 
-            entry.render(graphics, font, x, entryY, width, isHovered = entry.id == hoveredId, isSelected = entry.id == selectedId)
+        for (i in startRow until adjustedEndRow) {
+            val entryY = contentY + (i - startRow) * ROW_HEIGHT
+            entries[i].render(graphics, font, x, entryY, width, isHovered = entries[i].id == hoveredId, isSelected = entries[i].id == selectedId)
+        }
+
+        if (showTop) {
+            graphics.fill(x, y, x + width, y + indicatorH, 0xFF222222.toInt())
+            val label = "↑ $startRow hidden"
+            graphics.text(font, label, x + width / 2 - font.width(label) / 2, y + 1, 0xFF888888.toInt(), false)
+        }
+        if (showBottom) {
+            val barY = bottomBound - indicatorH
+            graphics.fill(x, barY, x + width, bottomBound, 0xFF222222.toInt())
+            val label = "↓ $hiddenBelow hidden"
+            graphics.text(font, label, x + width / 2 - font.width(label) / 2, barY + 1, 0xFF888888.toInt(), false)
         }
     }
 

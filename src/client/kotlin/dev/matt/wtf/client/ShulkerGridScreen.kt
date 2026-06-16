@@ -13,6 +13,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private val allEntries = entries.toMutableList()
     private var searchField: EditBox? = null
     private val sections = mutableMapOf<ShulkerSectionType, ShulkerSection>()
+    private var sectionHeights = mapOf<ShulkerSection, Int>()
     private val previewItemsById = mutableMapOf<String, List<ItemStack>>()
     // Lowercased item display names per entry, computed once — building display
     // names is too costly to redo on every search keystroke.
@@ -25,6 +26,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private var percentButtonBounds: IntArray? = null
     private var blurButtonBounds: IntArray? = null
     private var glowButtonBounds: IntArray? = null
+    private var clearAllButtonBounds: IntArray? = null
     private var infoBounds: IntArray? = null
     private var showInfo = false
 
@@ -192,6 +194,14 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         renderToggleButton(graphics, glowButtonBounds!!, "Item Glow", glowOn, mouseX, mouseY)
         renderToggleButton(graphics, percentButtonBounds!!, "Match %", percentOn, mouseX, mouseY)
         renderToggleButton(graphics, blurButtonBounds!!, "Blur BG", blurOn, mouseX, mouseY)
+
+        if (WTFClient.isDebugMode()) {
+            val clearX = glowX - 5 - topBarButtonWidth
+            clearAllButtonBounds = intArrayOf(clearX, 5, clearX + topBarButtonWidth, 5 + btnHeight)
+            renderToggleButton(graphics, clearAllButtonBounds!!, "Clear All", false, mouseX, mouseY)
+        } else {
+            clearAllButtonBounds = null
+        }
     }
 
     private fun renderToggleButton(graphics: GuiGraphicsExtractor, bounds: IntArray, label: String, on: Boolean, mouseX: Int, mouseY: Int) {
@@ -227,6 +237,28 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         val titleW = font.width(title)
         graphics.text(font, title, (leftPanelWidth - titleW) / 2, panelY + 3, 0xFFCCCCCC.toInt(), false)
 
+        // Divide available content space among expanded sections so all section
+        // headers stay visible. Sections needing less than their share give
+        // surplus back to sections that need more (one redistribution pass).
+        val activeSections = ShulkerSectionType.entries.mapNotNull { sections[it] }
+        val totalHeaderH = activeSections.size * ShulkerSection.HEADER_HEIGHT
+        val totalContentSpace = (panelHeight - titleBarH - totalHeaderH).coerceAtLeast(0)
+        val expandedSections = activeSections.filter { !it.isCollapsed }
+        sectionHeights = run {
+            if (expandedSections.isEmpty()) return@run emptyMap()
+            val budgetPerSection = totalContentSpace / expandedSections.size
+            val heights = expandedSections.associateWith { minOf(it.getTotalContentHeight(), budgetPerSection) }.toMutableMap()
+            val surplus = totalContentSpace - heights.values.sum()
+            if (surplus > 0) {
+                val needMore = heights.entries.filter { (s, h) -> h < s.getTotalContentHeight() }
+                if (needMore.isNotEmpty()) {
+                    val bonus = surplus / needMore.size
+                    needMore.forEach { (s, h) -> heights[s] = minOf(s.getTotalContentHeight(), h + bonus) }
+                }
+            }
+            heights
+        }
+
         var currentY = panelY + titleBarH
 
         for (type in ShulkerSectionType.entries) {
@@ -236,10 +268,10 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             currentY += ShulkerSection.HEADER_HEIGHT
 
             if (!section.isCollapsed) {
-                val availableHeight = height - currentY - 5
-                if (availableHeight > 0) {
-                    section.renderEntries(graphics, font, 0, currentY, leftPanelWidth, availableHeight, hoveredId, selectedId)
-                    currentY += minOf(section.getTotalContentHeight(), availableHeight)
+                val sectionH = sectionHeights[section] ?: 0
+                if (sectionH > 0) {
+                    section.renderEntries(graphics, font, 0, currentY, leftPanelWidth, sectionH, hoveredId, selectedId)
+                    currentY += sectionH
                 }
             }
 
@@ -254,7 +286,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             section.renderHeader(graphics, font, 0, headerY, leftPanelWidth)
             headerY += ShulkerSection.HEADER_HEIGHT
             if (!section.isCollapsed) {
-                headerY += minOf(section.getTotalContentHeight(), height - headerY - 5)
+                headerY += sectionHeights[section] ?: 0
             }
             if (headerY >= panelY + panelHeight) break
         }
@@ -271,7 +303,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             hoverY += ShulkerSection.HEADER_HEIGHT
 
             if (!section.isCollapsed) {
-                val contentHeight = section.getTotalContentHeight()
+                val contentHeight = sectionHeights[section] ?: 0
                 if (mouseX in 0..leftPanelWidth && mouseY >= hoverY && mouseY < hoverY + contentHeight) {
                     val localY = mouseY - hoverY
                     val entry = section.getEntryAtPosition(localY)
@@ -524,6 +556,12 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
                 WTFClient.setPreviewBlurEnabled(!WTFClient.isPreviewBlurEnabled())
                 return true
             }
+            val cBounds = clearAllButtonBounds
+            if (cBounds != null && mouseX >= cBounds[0] && mouseX < cBounds[2] && mouseY >= cBounds[1] && mouseY < cBounds[3]) {
+                WTFClient.clearAllRecords()
+                onClose()
+                return true
+            }
         }
 
         if (button == 0) {
@@ -596,12 +634,15 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
 
             for (type in ShulkerSectionType.entries) {
                 val section = sections[type] ?: continue
-                val sectionEnd = currentY + section.getTotalContentHeight()
-                if (mouseY >= currentY && mouseY < sectionEnd) {
-                    section.scroll((-verticalAmount * ShulkerSection.ROW_HEIGHT).toInt())
-                    return true
+                currentY += ShulkerSection.HEADER_HEIGHT
+                if (!section.isCollapsed) {
+                    val h = sectionHeights[section] ?: 0
+                    if (mouseY >= currentY && mouseY < currentY + h) {
+                        section.scroll((-verticalAmount * ShulkerSection.ROW_HEIGHT).toInt())
+                        return true
+                    }
+                    currentY += h
                 }
-                currentY = sectionEnd
             }
         }
         return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount)
