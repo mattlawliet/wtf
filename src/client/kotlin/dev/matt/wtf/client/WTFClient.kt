@@ -2275,9 +2275,18 @@ object WTFClient : ClientModInitializer {
             }
         }
 
-        // 4. Cleanup: Orphan stale inv entries (not in player inventory anymore)
+        // 4. Cleanup: Orphan stale inv entries (not in player inventory anymore).
+        // Grace window: an entry touched moments ago (just created/confirmed
+        // by THIS or the previous scan) might miss a single pass due to sync
+        // timing right at screen open, not because it actually left the
+        // inventory. Demoting it immediately erases the position memory pass0
+        // relies on, forcing a fresh uuid (and a fresh round of duplicate
+        // splitting) next time instead of ever stabilizing.
+        val now = System.currentTimeMillis()
         for (entry in trackedShulkers.values) {
             if (entry.state == "inv" && entry.uuid !in foundUUIDs) {
+                val age = now - (entry.last_update_time.toLongOrNull() ?: 0L)
+                if (age < 1000) continue
                 entry.state = "ex-inv"
                 log("transition: ${entry.name} (${entry.uuid.take(8)}) inv → ex-inv from=scan:cleanup lastKnown=${entry.lastKnown}")
             }
