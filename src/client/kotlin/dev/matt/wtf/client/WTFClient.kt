@@ -271,13 +271,32 @@ object WTFClient : ClientModInitializer {
                 transitOrder.addLast(entry.uuid)
                 log("transition: ${entry.name} (${entry.uuid.take(8)}) → inv from=$from")
                 if (entry.happy) notify("§7→ §ainv§f §7(${entry.name})§f")
-                // Refresh contentHash from inventory so ENTITY_LOAD can match on Q-drop
+                // Refresh contentHash from inventory so ENTITY_LOAD can match on Q-drop.
+                // On a real multiplayer server the pickup packet can hand back a stack
+                // that never got our wtf:uuid stamp at all (the server doesn't echo
+                // client-only NBT through that round-trip) - if so, don't wait for the
+                // next throttled scan to notice: find it by content hash right now and
+                // re-stamp immediately, so the marker is correct the instant you open
+                // your inventory instead of possibly a few ticks later.
                 val invMenu = player.inventoryMenu
+                var foundStamped = false
                 for (i in 0 until invMenu.slots.size) {
                     val stack = invMenu.getSlot(i).item
                     if (isShulkerItem(stack) && getItemUUID(stack) == entry.uuid) {
                         fingerprintFromItem(stack)?.let { entry.contentHash = it }
+                        foundStamped = true
                         break
+                    }
+                }
+                if (!foundStamped && entry.contentHash.isNotEmpty()) {
+                    for (i in 0 until invMenu.slots.size) {
+                        val stack = invMenu.getSlot(i).item
+                        if (isTrackableShulker(stack) && getItemUUID(stack) == null &&
+                            fingerprintFromItem(stack) == entry.contentHash) {
+                            injectItemUUID(stack, entry.uuid)
+                            log("transferToInv: re-stamped ${entry.name} (${entry.uuid.take(8)}) immediately, server pickup dropped the tag")
+                            break
+                        }
                     }
                 }
                 scanQueued = true
