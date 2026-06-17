@@ -2037,15 +2037,20 @@ object WTFClient : ClientModInitializer {
             inventoryShulkers.add(Triple(inv.carried, "cursor", fingerprintFromItem(inv.carried) ?: ""))
         }
 
-        // Evict duplicate wtf:uuid stamps in inventory (pre-1.4.9 bad data).
-        // If the same uuid appears on >1 stack, strip it from all but the first
-        // (lowest slot index wins; entry.coords will confirm the real slot).
+        // Evict duplicate wtf:uuid stamps in inventory (pre-1.4.9 bad data, or
+        // a literal item clone that copied the tag along with everything
+        // else). If the same uuid appears on >1 stack, the first keeps it;
+        // the rest get a FRESH uuid right here instead of just being stripped
+        // bare - stripping alone left them to be re-discovered (and possibly
+        // re-collide) on every subsequent scan, which is what made this same
+        // eviction block fire identically on every single chest close.
         val invUUIDSeen = mutableSetOf<String>()
         for (ss in inventoryShulkers) {
             val uuid = getItemUUID(ss.first) ?: continue
             if (!invUUIDSeen.add(uuid)) {
-                stripItemUUID(ss.first)
-                log("evict: duplicate inv uuid ${uuid.take(8)} stripped from ${ss.second}")
+                val fresh = java.util.UUID.randomUUID().toString()
+                injectItemUUID(ss.first, fresh)
+                log("evict: duplicate inv uuid ${uuid.take(8)} at ${ss.second} split into fresh ${fresh.take(8)}")
             }
         }
 
