@@ -756,7 +756,16 @@ object WTFClient : ClientModInitializer {
             }
             val ledgerUUID = if (menu.containerId == ledgerMenuId) validateLedger(slotLedger[posKey]) else null
             val persistedUUID = validateLedger(persistedChestLedger[chestLoc]?.get(posKey))
-            val matchedUUID = stackUUID?.takeIf { it in trackedShulkers }
+            if (stackUUID != null && stackUUID in shulkersInChest) {
+                // This chest stack's literal stamp duplicates an identity
+                // that's currently held elsewhere (inv, or another chest
+                // slot already claimed this pass) - splitting it here, not
+                // just skipping it, so it doesn't fall to "pending" and get
+                // ensureItemUUID'd right back onto the same duplicate stamp.
+                stripItemUUID(stack)
+                log("chest resolve: stamp ${stackUUID.take(8)} also held elsewhere, split at $posKey")
+            }
+            val matchedUUID = stackUUID?.takeIf { it in trackedShulkers && it !in shulkersInChest }
                 ?: ledgerUUID
                 ?: persistedUUID
                 ?: ShulkerIdentityResolver.resolveBySlotIndex(trackedShulkers, chestState, slot.index, stackType, stackName, hasCustomName, shulkersInChest)
