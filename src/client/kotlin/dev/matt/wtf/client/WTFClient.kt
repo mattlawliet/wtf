@@ -1439,7 +1439,7 @@ object WTFClient : ClientModInitializer {
                     // will flip the entry to inv shortly - give it a grace window.
                     val coords = parseVec3(shulker.coords)
                     val pos = coords?.let { BlockPos(it.first.toInt(), it.second.toInt(), it.third.toInt()) }
-                    if (pos == null || !level.hasChunkAt(pos)) {
+                    if (pos == null || !level.isLoaded(pos)) {
                         itemVanishTicks.remove(shulker.uuid)
                         itemVanishInvCount.remove(shulker.uuid)
                         continue
@@ -1500,7 +1500,12 @@ object WTFClient : ClientModInitializer {
                         val coords = parseVec3(shulker.coords)
                         if (coords != null) {
                             val pos = BlockPos(coords.first.toInt(), coords.second.toInt(), coords.third.toInt())
-                            if (level.hasChunkAt(pos)) {
+                            // isLoaded, not the deprecated hasChunkAt: hasChunkAt can read
+                            // true for a client-side placeholder/empty chunk outside render
+                            // distance, whose block data defaults to air - that falsely
+                            // looked like "block gone" and marked it last-known just from
+                            // walking away, not from genuinely verifying it was missing.
+                            if (level.isLoaded(pos)) {
                                 val blockState = level.getBlockState(pos)
                                 val blockId = BuiltInRegistries.BLOCK.getKey(blockState.block).toString()
                                 val stillExists = when {
