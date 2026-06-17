@@ -1734,9 +1734,23 @@ object WTFClient : ClientModInitializer {
         for (slot in container.menu.slots) {
             val stack = slot.item
             if (!isSlotMarked(stack, slot.index)) continue
-            val uuid = getItemUUID(stack) ?: slotLedger[ledgerPosKey(slot.index)]
+            val stampUUID = getItemUUID(stack)
+            val uuid = stampUUID ?: slotLedger[ledgerPosKey(slot.index)]
             if (uuid != null && !shownThisFrame.add(uuid)) {
-                if (debugVerbose) log("render: slot=${slot.index} uuid=${uuid.take(8)} SKIPPED (duplicate this frame)")
+                // Hiding the icon alone leaves the literal duplicate stamp in
+                // place - the surplus stack and the "real" owner both still
+                // point at the SAME tracked entry, so toggling either one
+                // toggles both forever. Strip the stamp off the surplus stack
+                // here and queue a rescan so it gets re-identified to its own
+                // distinct tracked entry (if one exists) instead of just
+                // staying invisible-but-still-shared.
+                if (stampUUID != null) {
+                    stripItemUUID(stack)
+                    scanQueued = true
+                    log("render: slot=${slot.index} uuid=${uuid.take(8)} duplicate stamp stripped, queued rescan")
+                } else if (debugVerbose) {
+                    log("render: slot=${slot.index} uuid=${uuid.take(8)} SKIPPED (duplicate this frame, ledger-only)")
+                }
                 continue
             }
             val x = accessor.leftPos + slot.x
