@@ -515,6 +515,24 @@ object WTFClient : ClientModInitializer {
         return if (!slot.item.isEmpty && isShulkerItem(slot.item)) pos to slot.item else null
     }
 
+    // A double chest is two adjacent single-chest blocks merged by vanilla into
+    // one CompoundContainer, which is NOT a BaseContainerBlockEntity - so
+    // getContainerBlockPos can't see it, and identity falls back to whichever
+    // exact half the player's hitResult landed on. Which half that is varies
+    // by which side you click to open it, so the SAME physical chest could
+    // get recorded under either half's coordinates on different opens,
+    // silently splitting its ledger/persisted history in two. Always resolve
+    // to the same canonical half (lower x, tie-break lower z) regardless of
+    // which side was actually clicked.
+    private fun canonicalChestPos(pos: BlockPos, level: Level): BlockPos {
+        val blockId = BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).block).toString()
+        if (!blockId.contains("chest") || blockId.contains("ender")) return pos
+        val partner = listOf(pos.north(), pos.south(), pos.east(), pos.west()).firstOrNull { np ->
+            BuiltInRegistries.BLOCK.getKey(level.getBlockState(np).block).toString() == blockId
+        } ?: return pos
+        return if (partner.x < pos.x || (partner.x == pos.x && partner.z < pos.z)) partner else pos
+    }
+
     private fun getContainerBlockPos(menu: net.minecraft.world.inventory.AbstractContainerMenu, level: Level): Pair<BlockPos, String>? {
         for (slot in menu.slots) {
             val container = slot.container
@@ -562,8 +580,8 @@ object WTFClient : ClientModInitializer {
             if (hr is net.minecraft.world.phys.BlockHitResult) {
                 val pos = hr.blockPos
                 if (level.getBlockEntity(pos) is BaseContainerBlockEntity) {
-                    openChestPos = pos
-                    log("handleChestScreen: container at ${blockLocation(pos, level)} (from hitResult)")
+                    openChestPos = canonicalChestPos(pos, level)
+                    log("handleChestScreen: container at ${blockLocation(openChestPos!!, level)} (from hitResult)")
                 }
             }
         }
@@ -2832,7 +2850,14 @@ object WTFClient : ClientModInitializer {
             return
         }
 
-        val displayName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: stack.hoverName.string
+        // Must match the generic fallback used everywhere identity is
+        // validated (ledgerEntryMatchesStack etc) - hoverName.string for an
+        // unnamed COLORED box returns e.g. "Blue Shulker Box", not "Shulker
+        // Box". Storing that as entry.name made every future scan think a
+        // genuinely-unnamed colored box was named (entryNamed check), so
+        // its stale generic-fallback "Shulker Box" stackName never matched
+        // and the ledger entry got evicted as stale on every chest open.
+        val displayName = stack.get(DataComponents.CUSTOM_NAME)?.string ?: "Shulker Box"
         val shulkerType = BuiltInRegistries.ITEM.getKey(stack.item).toString()
         val contentHash = fingerprintFromItem(stack) ?: ""
         // An empty, unnamed box has no distinguishing fingerprint (shares the
