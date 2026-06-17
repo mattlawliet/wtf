@@ -1763,12 +1763,20 @@ object WTFClient : ClientModInitializer {
                     }
                 }
             }
-            if (screen is AbstractContainerScreenAccessor) {
-                ScreenEvents.afterExtract(screen).register { _, graphics, _, _, _ ->
-                    renderHappyMarkers(screen, graphics)
-                }
-            }
         }
+    }
+
+    // Called from AbstractContainerScreenTooltipMixin, injected right before
+    // extractTooltip (vanilla's renderTooltip) - NOT via ScreenEvents.afterExtract,
+    // which fires after the screen's ENTIRE render including the tooltip itself
+    // (afterExtract = after extractRenderState, the renamed Screen.render). That
+    // made the marker icon draw on top of tooltips/other mods' overlays every
+    // time. This mixin point is the one place that's after items but before
+    // tooltip.
+    @JvmStatic
+    fun onBeforeTooltip(screen: Any, graphics: GuiGraphicsExtractor) {
+        if (screen !is Screen || screen !is AbstractContainerScreenAccessor) return
+        renderHappyMarkers(screen, graphics)
     }
 
     // Single source of truth for "should this slot show the marker icon".

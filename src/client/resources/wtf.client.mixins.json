@@ -6,6 +6,7 @@
 		"BlockItemMixin",
 		"ExampleClientMixin",
 		"AbstractContainerScreenAccessor",
+		"AbstractContainerScreenTooltipMixin",
 		"ShulkerBoxMenuAccessor",
 		"ClientLevelMixin",
 		"ClientPacketListenerMixin",
