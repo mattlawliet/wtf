@@ -614,13 +614,17 @@ object WTFClient : ClientModInitializer {
             val stack = slot.item
             if (stack.isEmpty || !isTrackableShulker(stack)) continue
             val pos = ledgerPosKey(slot.index)
-            val existingUUID = getItemUUID(stack)
+            var existingUUID = getItemUUID(stack)
             if (existingUUID != null && existingUUID in trackedShulkers) {
                 // If this uuid is ALSO stamped on a player-inventory item, the same
                 // identity is present in two different locations simultaneously (old
                 // shared-uuid bad data). Chest item loses - strip it and block the
                 // uuid from being re-assigned to any chest slot this session so that
-                // the inv item remains the sole owner.
+                // the inv item remains the sole owner. Don't just leave this slot
+                // bare for the rest of the open though (that's what made marked
+                // boxes show no icon until the NEXT reopen) - fall through to the
+                // unstamped-resolution path below so it gets re-identified to its
+                // own real entry immediately, by hash/slot, in this same pass.
                 val alsoInInv = player != null && menu.slots.any { s ->
                     s.container == player.inventory && getItemUUID(s.item) == existingUUID
                 }
@@ -630,15 +634,16 @@ object WTFClient : ClientModInitializer {
                     persistedChestLedger[chestLoc]?.let { if (it[pos] == existingUUID) it.remove(pos) }
                     claimed.add(existingUUID)
                     log("evict: uuid ${existingUUID.take(8)} also in player inv, stripped from chest slot ${slot.index}")
+                    existingUUID = null
+                } else {
+                    // Already stamped and no conflict — add to ledger so evictOrphanUUIDStamps
+                    // knows the owner slot and doesn't strip it as an unclaimed duplicate.
+                    if (pos !in slotLedger && existingUUID !in claimed) {
+                        slotLedger[pos] = existingUUID
+                        claimed.add(existingUUID)
+                    }
                     continue
                 }
-                // Already stamped and no conflict — add to ledger so evictOrphanUUIDStamps
-                // knows the owner slot and doesn't strip it as an unclaimed duplicate.
-                if (pos !in slotLedger && existingUUID !in claimed) {
-                    slotLedger[pos] = existingUUID
-                    claimed.add(existingUUID)
-                }
-                continue
             }
             if (pos in slotLedger) continue
             val type = BuiltInRegistries.ITEM.getKey(stack.item).toString()
