@@ -2753,46 +2753,22 @@ object WTFClient : ClientModInitializer {
         val cachedNbt = serializeShulkerContents(stack)
         val player = mc.player
 
-        // A stack without a stamped uuid may still correspond to an existing
-        // tracked entry that just hasn't been hash-matched yet (e.g. an
-        // unmatched duplicate in this chest's seedChestSlotUUIDs pass).
-        // Resolving it the same way avoids minting a fresh uuid that "steals"
-        // this slot from the real entry on chest close, which marks the real
-        // entry's last known location as stale (LK).
+        // Direct action, no guessing: the player pointed at this exact physical
+        // stack and pressed the key, so it gets the stamp it already carries, or
+        // a fresh one if it has none. No content/name/ledger-pin matching here -
+        // that's what let toggling one box flip an unrelated same-named box's
+        // marker too. Slot position is still recorded below for display and as
+        // a hint for the SEPARATE chest-scan resolver, but never used here to
+        // pick a different identity than what's actually stamped on this stack.
         val hasCustomName = stack.has(DataComponents.CUSTOM_NAME)
         val isExternal = !(player != null && slot.container == player.inventory)
         val posKey = ledgerPosKey(slot.index)
-        val uuid = getItemUUID(stack) ?: run {
-            if (isExternal) {
-                // Slot-anchored marking: the user pointed at a specific physical
-                // slot, so a box only inherits an existing identity when the slot
-                // ledger pins it HERE (and it still matches). Never re-link by
-                // content alone - that steals an identical box's identity and
-                // parks the marker on the wrong slot. Pin the slot immediately so
-                // close/reopen keeps the marker exactly where it was marked.
-                val chestLoc = if (openChestIsEnderChest) "Ender Chest"
-                    else mc.level?.let { lv -> openChestPos?.let { blockLocation(it, lv) } } ?: ""
-                val ledgerValues = slotLedger.values
-                val pinned = (slotLedger[posKey]
-                    ?: persistedChestLedger[chestLoc]?.get(posKey)?.takeIf { it !in ledgerValues })
-                    ?.takeIf {
-                        it in trackedShulkers &&
-                            ShulkerIdentityResolver.ledgerEntryMatchesStack(trackedShulkers[it]!!, contentHash, displayName, shulkerType, hasCustomName)
-                    }
-                val resolved = pinned ?: ensureItemUUID(stack)
-                slotLedger[posKey] = resolved
-                if (chestLoc.isNotEmpty()) persistedChestLedger.getOrPut(chestLoc) { mutableMapOf() }[posKey] = resolved
-                if (getItemUUID(stack) != resolved) injectItemUUID(stack, resolved)
-                resolved
-            } else {
-                // Inventory slot: performInventoryScan already re-links boxes via
-                // hash/transit match before the user presses the key. If the stack
-                // still has no uuid at this point, it's genuinely new - mint one.
-                // Do NOT call resolveTrackedChestStack here: name-match would steal
-                // a tracked entry from a DIFFERENT physical box with the same name
-                // (e.g. marking Kitt #2 re-links it to Kitt #1's uuid → both toggle).
-                ensureItemUUID(stack)
-            }
+        val uuid = ensureItemUUID(stack)
+        if (isExternal) {
+            val chestLoc = if (openChestIsEnderChest) "Ender Chest"
+                else mc.level?.let { lv -> openChestPos?.let { blockLocation(it, lv) } } ?: ""
+            slotLedger[posKey] = uuid
+            if (chestLoc.isNotEmpty()) persistedChestLedger.getOrPut(chestLoc) { mutableMapOf() }[posKey] = uuid
         }
 
         // Evict any duplicate uuid stamps from other chest slots now that this
