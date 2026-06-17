@@ -1676,6 +1676,7 @@ object WTFClient : ClientModInitializer {
         }
 
         ScreenEvents.AFTER_INIT.register { mc, screen, _, _ ->
+            log("ScreenEvents.AFTER_INIT: ${screen::class.simpleName} (isContainerAccessor=${screen is AbstractContainerScreenAccessor}, isShulkerBox=${screen is ShulkerBoxScreen})")
             val level = mc.level ?: return@register
             val player = mc.player ?: return@register
             performInventoryScan(level, player)
@@ -1688,6 +1689,7 @@ object WTFClient : ClientModInitializer {
             if (screen is AbstractContainerScreenAccessor && screen !is ShulkerBoxScreen) {
                 handleChestScreen(mc, screen)
                 ScreenEvents.remove(screen).register {
+                    log("ScreenEvents.remove fired for ${screen::class.simpleName}")
                     handleChestClosed(screen)
                     val l = Minecraft.getInstance().level
                     val p = Minecraft.getInstance().player
