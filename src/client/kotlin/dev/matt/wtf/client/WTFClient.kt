@@ -2796,7 +2796,22 @@ object WTFClient : ClientModInitializer {
         val hasCustomName = stack.has(DataComponents.CUSTOM_NAME)
         val isExternal = !(player != null && slot.container == player.inventory)
         val posKey = ledgerPosKey(slot.index)
-        val uuid = ensureItemUUID(stack)
+        var uuid = ensureItemUUID(stack)
+        // A literal item clone (creative dupe, /give copy, etc) copies the
+        // wtf:uuid tag along with everything else - byte-identical NBT, no
+        // hash difference, nothing to disambiguate by content. Per-slot/
+        // per-physical-instance identity is the whole point of tracking, so
+        // if this exact stamp is ALSO sitting on a different slot right now,
+        // split this one off into its own fresh identity instead of sharing
+        // the clone's marker (which made marking one toggle both at once).
+        val menu = (screen as net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>).menu
+        val clonedElsewhere = menu.slots.any { s -> s.index != slot.index && getItemUUID(s.item) == uuid }
+        if (clonedElsewhere) {
+            val oldUuid = uuid
+            uuid = java.util.UUID.randomUUID().toString()
+            injectItemUUID(stack, uuid)
+            log("toggle: stamp ${oldUuid.take(8)} also present elsewhere - split into fresh ${uuid.take(8)}")
+        }
         if (isExternal) {
             val chestLoc = if (openChestIsEnderChest) "Ender Chest"
                 else mc.level?.let { lv -> openChestPos?.let { blockLocation(it, lv) } } ?: ""
