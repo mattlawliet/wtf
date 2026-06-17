@@ -2731,6 +2731,7 @@ object WTFClient : ClientModInitializer {
         }
         val slot = (screen as AbstractContainerScreenAccessor).hoveredSlot ?: return
         val stack = slot.item
+        log("toggle: hoveredSlot=${slot.index} x=${slot.x} y=${slot.y} container=${slot.container::class.simpleName} item=${stack.item} stamp=${getItemUUID(stack)?.take(8)}")
         if (stack.isEmpty || !isShulkerItem(stack)) {
             return
         }
