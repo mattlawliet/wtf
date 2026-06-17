@@ -121,7 +121,7 @@ object WTFClient : ClientModInitializer {
     private var debugVerbose = false
     private var logWriter: PrintWriter? = null
     private var logBytesWritten = 0
-    private val MAX_LOG_BYTES = 1_000_000
+    private val MAX_LOG_BYTES = 20_000_000
     private val MAX_TRANSIT_SPARE = 20
     private var tickCounter = 0
 
@@ -1129,8 +1129,26 @@ object WTFClient : ClientModInitializer {
         slotLedger.clear()
         persistedChestLedger.clear()
         transitOrder.clear()
+        // Wiping the map alone leaves every box's literal wtf:uuid stamp in
+        // place. The next scan/open then "rediscovers" those leftover stamps
+        // as if they were still valid - and since old data can carry the same
+        // stamp on more than one distinct physical box, rediscovery silently
+        // cross-links unrelated boxes back together. A clear should mean
+        // zero memory AND zero leftover physical stamps, so strip every
+        // shulker box currently reachable (inventory + any open container).
+        val mc = Minecraft.getInstance()
+        val player = mc.player
+        if (player != null) {
+            for (i in 0 until player.inventoryMenu.slots.size) {
+                stripItemUUID(player.inventoryMenu.getSlot(i).item)
+            }
+            val menu = player.containerMenu
+            if (menu !== player.inventoryMenu) {
+                for (slot in menu.slots) stripItemUUID(slot.item)
+            }
+        }
         save()
-        log("clearAllRecords: all records wiped")
+        log("clearAllRecords: all records wiped, stamps stripped")
     }
 
     fun setShowMatchPercentEnabled(value: Boolean) {
