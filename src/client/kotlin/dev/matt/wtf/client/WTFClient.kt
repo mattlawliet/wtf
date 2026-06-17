@@ -3017,7 +3017,7 @@ object WTFClient : ClientModInitializer {
         if (happyShulkers.isEmpty() && !file.exists() && markerIcon == markerIcons[0] && markerColorIdx == 0) return
 
         val prunedLedger = persistedChestLedger.mapValues { (_, slots) ->
-            slots.filterValues { it in trackedShulkers }
+            slots.filterValues { it in happyShulkers }
         }.filterValues { it.isNotEmpty() }
 
         val json = gson.toJson(ShulkerSave(
