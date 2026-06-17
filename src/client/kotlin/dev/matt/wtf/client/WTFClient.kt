@@ -608,7 +608,17 @@ object WTFClient : ClientModInitializer {
             }
         }
 
-        val claimed = slotLedger.values.toMutableSet()
+        // Identities currently stamped on a player-inv stack are off-limits for
+        // hash/slot matching a chest slot too - without this, a chest box with
+        // identical contents to an inv box gets resolved onto the SAME tracked
+        // entry, so the inv box's marker and the chest box's marker visually
+        // fight (whichever slot renders first wins the per-frame dedupe, making
+        // the other one look like it "lost" its icon).
+        val invStampedUUIDs = if (player != null) {
+            menu.slots.filter { it.container == player.inventory }
+                .mapNotNull { getItemUUID(it.item) }.toSet()
+        } else emptySet()
+        val claimed = (slotLedger.values + invStampedUUIDs).toMutableSet()
         for (slot in menu.slots) {
             if (player != null && slot.container == player.inventory) continue
             val stack = slot.item
@@ -709,7 +719,12 @@ object WTFClient : ClientModInitializer {
             val stackType: String
         )
 
-        val shulkersInChest = mutableSetOf<String>()
+        // Same guard as seedChestSlotUUIDs: an identity currently stamped on a
+        // player-inv stack can't be claimed by a hash/slot match on the chest
+        // side too, or the two slots' markers fight over one shared entry.
+        val invStampedUUIDs = menu.slots.filter { it.container == player.inventory }
+            .mapNotNull { getItemUUID(it.item) }.toSet()
+        val shulkersInChest = invStampedUUIDs.toMutableSet()
         val pending = mutableListOf<ScanItem>()
         val resolved = mutableListOf<Pair<ScanItem, String>>()
 
