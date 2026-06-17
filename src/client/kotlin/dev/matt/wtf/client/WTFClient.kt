@@ -2037,6 +2037,34 @@ object WTFClient : ClientModInitializer {
             inventoryShulkers.add(Triple(inv.carried, "cursor", fingerprintFromItem(inv.carried) ?: ""))
         }
 
+        val foundUUIDs = mutableSetOf<String>()
+        var changed = false
+
+        // Pass 0: position memory, authoritative. A server resync can hand
+        // back a stamp that's stale, wrong, or duplicated onto more than one
+        // stack (the literal NBT is never something the client can fix
+        // server-side - any edit gets overwritten on the next resync), so
+        // physical NBT can't be trusted as the primary signal for a slot the
+        // mod has already seen before. If this exact slot is remembered as a
+        // specific tracked entry, that memory wins outright: force the stamp
+        // back to what's remembered and skip every other heuristic for it.
+        // Only slots with no memory at all fall through to uuid/hash/name
+        // matching below.
+        val resolvedThisScan = mutableSetOf<String>()
+        for (ss in inventoryShulkers) {
+            val remembered = trackedShulkers.values.firstOrNull {
+                it.state == "inv" && it.coords == ss.second && it.uuid !in foundUUIDs
+            } ?: continue
+            if (getItemUUID(ss.first) != remembered.uuid) {
+                injectItemUUID(ss.first, remembered.uuid)
+                log("scan: position memory ${ss.second} -> ${remembered.uuid.take(8)} (overrode stamp)")
+            }
+            remembered.contentHash = ss.third
+            remembered.last_update_time = System.currentTimeMillis().toString()
+            foundUUIDs.add(remembered.uuid)
+            resolvedThisScan.add(ss.second)
+        }
+
         // Evict duplicate wtf:uuid stamps in inventory (pre-1.4.9 bad data, or
         // a literal item clone that copied the tag along with everything
         // else). If the same uuid appears on >1 stack, the first keeps it;
@@ -2046,6 +2074,7 @@ object WTFClient : ClientModInitializer {
         // eviction block fire identically on every single chest close.
         val invUUIDSeen = mutableSetOf<String>()
         for (ss in inventoryShulkers) {
+            if (ss.second in resolvedThisScan) continue
             val uuid = getItemUUID(ss.first) ?: continue
             if (!invUUIDSeen.add(uuid)) {
                 val fresh = java.util.UUID.randomUUID().toString()
@@ -2054,11 +2083,9 @@ object WTFClient : ClientModInitializer {
             }
         }
 
-        val foundUUIDs = mutableSetOf<String>()
-        var changed = false
-
         // 2. Pass 1: Match by existing UUID (Highest confidence)
         for (ss in inventoryShulkers) {
+            if (ss.second in resolvedThisScan) continue
             val uuid = getItemUUID(ss.first)
             if (uuid != null && trackedShulkers.containsKey(uuid)) {
                 val entry = trackedShulkers[uuid]!!
@@ -2086,6 +2113,7 @@ object WTFClient : ClientModInitializer {
 
         // 3. Pass 2: Match by hash/state (For items that lost NBT or were just picked up)
         for (ss in inventoryShulkers) {
+            if (ss.second in resolvedThisScan) continue
             val currentUUID = getItemUUID(ss.first)
             if (currentUUID != null && foundUUIDs.contains(currentUUID)) continue
 
