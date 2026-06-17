@@ -2225,14 +2225,22 @@ object WTFClient : ClientModInitializer {
                     continue
                 }
 
-                // Ex-inv / ender recovery: re-link entries that reappeared in inventory
+                // Ex-inv / ender recovery: re-link entries that reappeared in inventory.
+                // With several hash-identical boxes (the common Kitt case), an
+                // arbitrary firstOrNull() falsely "recovers" a box that's still
+                // sitting right where it was (e.g. still in a chest) just because
+                // some unrelated inv stack happens to share its contents - and
+                // that gets caught/corrected later, but it's a real false
+                // "picked up" claim in the meantime. Without an exact slot match,
+                // only recover when there's exactly ONE candidate - ambiguous
+                // ones fall through to new discovery instead of a guess.
                 val recoveryMatch = if (hash == genericEmptyHash(stackType)) null else {
                     val recoveryCandidates = trackedShulkers.values.filter {
                         it.uuid !in foundUUIDs &&
                             (it.state == "ex-inv" || it.state == "enderchest") &&
                             it.contentHash == hash
                     }
-                    recoveryCandidates.firstOrNull { it.coords == ss.second } ?: recoveryCandidates.firstOrNull()
+                    recoveryCandidates.firstOrNull { it.coords == ss.second } ?: recoveryCandidates.singleOrNull()
                 }
 
                 if (recoveryMatch != null) {
