@@ -1,0 +1,45 @@
+{
+	"schemaVersion": 1,
+	"id": "wtf",
+	"version": "${version}",
+	"name": "WTF",
+	"description": "Tracks where you stashed your stuff across chests and shulker boxes, so you never wonder \"wtf did I put this\" again.",
+	"authors": [
+		"Matt"
+	],
+	"contact": {
+		"homepage": "https://github.com/mattlawliet/wtf",
+		"sources": "https://github.com/mattlawliet/wtf"
+	},
+	"license": "MIT",
+	"icon": "assets/wtf/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			{
+				"value": "dev.matt.wtf.WTF",
+				"adapter": "kotlin"
+			}
+		],
+		"client": [
+			{
+				"value": "dev.matt.wtf.client.WTFClient",
+				"adapter": "kotlin"
+			}
+		]
+	},
+	"mixins": [
+		"wtf.mixins.json",
+		{
+			"config": "wtf.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.2",
+		"minecraft": ">=26.1.2",
+		"java": ">=25",
+		"fabric-api": "*",
+		"fabric-language-kotlin": "*"
+	}
+}

@@ -1,0 +1,56 @@
+# Gradle
+.gradle/
+build/
+out/
+classes/
+.kotlin/
+
+# IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+bin/
+
+# Minecraft/Fabric Run
+run/
+!run/config/
+run/*
+!run/config/wtf/
+
+# macOS
+.DS_Store
+
+# Java
+hs_err_*.log
+replay_*.log
+*.hprof
+*.jfr
+
+# Local/Temp
+*.tmp
+*.log
+*.bak
+
+# Libraries/Sources that shouldn't be here (if they are external)
+# Based on the project structure, 'net/' seems to contain external code
+/net/
+
+# Build/dev artifacts, not needed to build
+/tmp/
+/releases/
+/graphify-out/
+/.understand-anything/
+.env
+.antigravitycli/
+.claude/
+.ponytail-audit*.md
+AGENTS.md
+CHECKLIST.md
+CLAUDE.md
+maya_algo_template.md
+maya_json_template.json

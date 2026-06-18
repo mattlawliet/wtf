@@ -1,0 +1,22 @@
+{
+	"required": true,
+	"package": "dev.matt.wtf.client.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"BlockItemMixin",
+		"AbstractContainerScreenAccessor",
+		"AbstractContainerScreenTooltipMixin",
+		"ShulkerBoxMenuAccessor",
+		"ClientLevelMixin",
+		"ClientPacketListenerMixin",
+		"AbstractContainerMenuMixin",
+		"LocalPlayerMixin",
+		"EntityAccessor"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"overwrites": {
+		"requireAnnotations": true
+	}
+}
