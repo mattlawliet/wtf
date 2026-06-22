@@ -310,6 +310,7 @@ object WTFClient : ClientModInitializer {
     private var prevSelectedSlot: Int = -1
     private var scanQueued: Boolean = false
     private var throttleTicks: Int = 0
+    private var hotbarHealTicks: Int = 0
     private val THROTTLE_WINDOW = 5
     // Container contents can arrive a tick or two after the screen opens
     // (sync packet latency). If the chest is closed before that, the slot
@@ -604,6 +605,13 @@ object WTFClient : ClientModInitializer {
                 }
             }
         }
+        }
+
+        // Player physically opened the chest being located - the world
+        // overlay's job is done, slot-blink (inside the now-open screen)
+        // takes over from here.
+        openChestPos?.let { p ->
+            locateTarget?.let { if (it.pos == p && it.dim == level.dimension().identifier().toString()) locateTarget = null }
         }
 
         openChestInvSnapshot = if (menu != null) captureInventorySnapshot(menu, mc.player) else mutableMapOf()
@@ -1124,8 +1132,98 @@ object WTFClient : ClientModInitializer {
     data class UiSettings(
         val previewBlur: Boolean = true,
         val showMatchPercent: Boolean = true,
-        val itemGlow: Boolean = true
+        val itemGlow: Boolean = true,
+        val compassStyle: Int = 0
     )
+
+    // Active "Locate" target set by the grid screen's Locate button. pos is
+    // non-null only for state=="block" entries (compass + world overlay);
+    // for inventory/chest items only the slot-blink applies.
+    data class LocateTarget(
+        val uuid: String,
+        val dim: String,
+        val pos: BlockPos?,
+        val startTick: Int
+    )
+
+    private var locateTarget: LocateTarget? = null
+
+    fun getLocateTarget(): LocateTarget? = locateTarget
+
+    fun isXaeroPresent(): Boolean = XaeroCompat.isPresent()
+
+    // "block" = the box itself is the world block; "ex-inv" = it's an item
+    // sitting inside another container, but that container's own coords are
+    // still the box's last-seen location - shared by locateEntry (HUD/overlay)
+    // and addXaeroWaypoint (waypoint), both need the same world position.
+    private fun resolveWorldPos(state: ShulkerState): BlockPos? {
+        if (state.state != "block" && state.state != "ex-inv") return null
+        val parts = state.coords.split(",").mapNotNull { it.trim().toIntOrNull() }
+        return if (parts.size == 3) BlockPos(parts[0], parts[1], parts[2]) else null
+    }
+
+    fun addXaeroWaypoint(entry: ShulkerEntry) {
+        val state = trackedShulkers[entry.id] ?: return
+        val pos = resolveWorldPos(state)
+        val player = Minecraft.getInstance().player
+        if (pos == null) {
+            player?.sendSystemMessage(Component.literal("Couldn't resolve a position to waypoint."))
+            return
+        }
+        val shulkerId = BuiltInRegistries.ITEM.getKey(entry.stack.item).toString()
+        val waypointName = "SB: ${entry.name.string}"
+        val colorName = XaeroCompat.waypointColorNameFor(shulkerId)
+        if (XaeroCompat.addNamedTemporaryWaypoint(pos.x, pos.y, pos.z, waypointName, "SB", colorName)) {
+            player?.sendSystemMessage(Component.literal("Added temporary waypoint to map."))
+        } else {
+            player?.sendSystemMessage(Component.literal("Failed to add waypoint."))
+        }
+    }
+
+    fun locateEntry(entry: ShulkerEntry) {
+        val state = trackedShulkers[entry.id] ?: return
+        when (state.state) {
+            "block", "ex-inv" -> {
+                val pos = resolveWorldPos(state)
+                locateTarget = LocateTarget(entry.id, state.dim, pos, tickCounter)
+                val player = Minecraft.getInstance().player
+                if (pos != null) {
+                    player?.sendSystemMessage(Component.literal("Pointing with the UI compass."))
+                } else {
+                    player?.sendSystemMessage(Component.literal("Couldn't resolve a position to locate."))
+                }
+            }
+            else -> {
+                locateTarget = LocateTarget(entry.id, state.dim, null, tickCounter)
+                Minecraft.getInstance().player?.sendSystemMessage(
+                    Component.literal("Highlighting in inventory/container.")
+                )
+            }
+        }
+    }
+
+    fun clearLocateTarget() {
+        locateTarget = null
+    }
+
+    // Resolves the on-screen slot rect for the active locate target's uuid in
+    // the currently open screen (container or player inventory), or null if
+    // not open / not found. Returns [x0, y0, x1, y1].
+    fun resolveLocateSlotBounds(screen: Screen): IntArray? {
+        val target = locateTarget ?: return null
+        val accessor = screen as? AbstractContainerScreenAccessor ?: return null
+        val menu = (screen as? net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>)?.menu ?: return null
+        // Stamp-only matching works in the player's own inventory (stamps
+        // survive there) but chests/barrels/etc. routinely have their wtf:uuid
+        // stamp wiped by server resync - same gap isSlotMarked already covers
+        // via the slotLedger fallback, needed here too for other container types.
+        val slot = menu.slots.find { getItemUUID(it.item) == target.uuid }
+            ?: menu.slots.find { slotLedger[ledgerPosKey(it.index)] == target.uuid }
+            ?: return null
+        val x = accessor.leftPos + slot.x
+        val y = accessor.topPos + slot.y
+        return intArrayOf(x, y, x + 16, y + 16)
+    }
 
     private var uiSettings = UiSettings()
     var toggleHappyKeyBinding: net.minecraft.client.KeyMapping? = null
@@ -1166,6 +1264,13 @@ object WTFClient : ClientModInitializer {
     }
 
     fun isShowMatchPercentEnabled(): Boolean = uiSettings.showMatchPercent
+
+    fun getCompassStyle(): Int = uiSettings.compassStyle
+
+    fun setCompassStyle(value: Int) {
+        uiSettings = uiSettings.copy(compassStyle = value)
+        saveUiSettings()
+    }
 
     fun isDebugModeEnabled(): Boolean = debugMode
     fun isDebugMode(): Boolean = debugMode
@@ -1210,6 +1315,9 @@ object WTFClient : ClientModInitializer {
     }
 
     override fun onInitializeClient() {
+        LocateCompassHud.register()
+        LocateWorldOverlay.register()
+        HotbarMarkerHud.register()
         val category = net.minecraft.client.KeyMapping.Category.register(
             Identifier.fromNamespaceAndPath("wtf", "mod")
         )
@@ -1253,6 +1361,11 @@ object WTFClient : ClientModInitializer {
             val player = client.player ?: return@register
             val level = client.level ?: return@register
             tickCounter++
+
+            // Safety-net expiry only - normal clear is "player interacted with the
+            // box" (opened it, or hovered the highlighted slot). 20 min covers a
+            // long walk to a far-off box without the indicator dying mid-trip.
+            locateTarget?.let { if (tickCounter - it.startTick > 24000) locateTarget = null }
 
             // 1. Handle pending item entities (block -> item)
             if (pendingItemEntities.isNotEmpty()) {
@@ -1615,6 +1728,22 @@ object WTFClient : ClientModInitializer {
 
             if (postJoinGraceTicks > 0) postJoinGraceTicks--
 
+            // Hotbar marker HUD (gameplay screen, no open menu) only trusts
+            // the live wtf:uuid stamp - no slotLedger to fall back on like
+            // the in-screen marker has. A pickup into a hotbar slot that
+            // ISN'T the currently-selected one never re-stamps until some
+            // other trigger (opening a screen) runs performInventoryScan, so
+            // the icon silently goes dark until then. Cheap periodic heal
+            // catches that without needing a screen open.
+            hotbarHealTicks++
+            if (hotbarHealTicks >= 40) {
+                hotbarHealTicks = 0
+                if (!scanQueued) {
+                    scanQueued = true
+                    throttleTicks = 0
+                }
+            }
+
             if (scanQueued) {
                 if (throttleTicks > 0 || postJoinGraceTicks > 0) {
                     if (throttleTicks > 0) throttleTicks--
@@ -1736,6 +1865,11 @@ object WTFClient : ClientModInitializer {
         }
 
         ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
+            // Stale target otherwise survives a server switch - if the new
+            // server's dimension id string happens to match (e.g. both
+            // "minecraft:overworld"), the compass/overlay point at a position
+            // that means nothing on this world, spinning at a nonsense angle.
+            locateTarget = null
             currentWorldId = null
             trackedShulkers.clear()
             nextSerial = 1
@@ -1801,6 +1935,33 @@ object WTFClient : ClientModInitializer {
     fun onBeforeTooltip(screen: Any, graphics: GuiGraphicsExtractor) {
         if (screen !is Screen || screen !is AbstractContainerScreenAccessor) return
         renderHappyMarkers(screen, graphics)
+        renderLocateSlotBlink(screen, graphics)
+    }
+
+    // Cycles red -> yellow -> red over the slot holding the locate target's
+    // stack, full alpha swing (not just a faint shimmer) - a plain white
+    // shimmer was too easy to miss against light item textures/backgrounds.
+    // Clears the locate target once the player hovers the matching slot.
+    private fun renderLocateSlotBlink(screen: Screen, graphics: GuiGraphicsExtractor) {
+        if (locateTarget == null) return
+        val bounds = resolveLocateSlotBounds(screen) ?: return
+        val accessor = screen as AbstractContainerScreenAccessor
+        val hovered = accessor.hoveredSlot
+        if (hovered != null) {
+            val hx = accessor.leftPos + hovered.x
+            val hy = accessor.topPos + hovered.y
+            if (hx == bounds[0] && hy == bounds[1]) {
+                locateTarget = null
+                return
+            }
+        }
+        val pulse = (0.5 + 0.5 * Math.sin(System.currentTimeMillis() / 300.0))
+        val alpha = (0x40 + (0xB0 * pulse)).toInt().coerceIn(0x40, 0xF0)
+        // Lerp red (255,40,40) -> yellow (255,220,40) with the same pulse so
+        // the slot visibly changes hue, not just brightness.
+        val g = (40 + (180 * pulse)).toInt().coerceIn(40, 220)
+        val color = (alpha shl 24) or (0xFF shl 16) or (g shl 8) or 0x28
+        graphics.fill(bounds[0], bounds[1], bounds[2], bounds[3], color)
     }
 
     // Single source of truth for "should this slot show the marker icon".
@@ -1817,6 +1978,18 @@ object WTFClient : ClientModInitializer {
         }
         return happy
     }
+
+    // Gameplay-screen hotbar has no open menu/slotLedger to fall back on, so
+    // this only trusts the live wtf:uuid stamp (same fast path as
+    // isSlotMarked, minus the ledger fallback that only makes sense for an
+    // actually-open container).
+    fun isHotbarSlotHappy(stack: ItemStack): Boolean {
+        if (stack.isEmpty || !isTrackableShulker(stack)) return false
+        val uuid = getItemUUID(stack) ?: return false
+        return trackedShulkers[uuid]?.happy == true
+    }
+
+    fun isMarkerIconNone(): Boolean = markerIcon == "none"
 
     private fun renderHappyMarkers(screen: Screen, graphics: GuiGraphicsExtractor) {
         if (markerIcon == "none") return
@@ -1874,6 +2047,9 @@ object WTFClient : ClientModInitializer {
         
         val coordStr = "${pos.x},${pos.y},${pos.z}"
         val dimStr = level.dimension().identifier().toString()
+
+        // Player physically opened the box being located - job done, stop pointing at it.
+        locateTarget?.let { if (it.pos == pos && it.dim == dimStr) locateTarget = null }
 
         // Get held shulker UUID to exclude from hash matching
         val heldStack = player.inventoryMenu.getSlot(player.inventory.selectedSlot).item

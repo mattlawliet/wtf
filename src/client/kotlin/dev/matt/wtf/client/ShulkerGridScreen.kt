@@ -23,6 +23,8 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private var searchQuery = ""
     private var pendingRemoveId: String? = null
     private var removeButtonBounds: IntArray? = null
+    private var locateButtonBounds: IntArray? = null
+    private var waypointButtonBounds: IntArray? = null
     private var percentButtonBounds: IntArray? = null
     private var blurButtonBounds: IntArray? = null
     private var glowButtonBounds: IntArray? = null
@@ -473,9 +475,22 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         val btnWidth = font.width(btnLabel) + 10
         val btnHeight = 14
 
-        val infoWidth = maxOf(font.width(selected.name.string), font.width(detailText), font.width(statusText), btnWidth)
+        // Locate button - points HUD compass / blinks overlay or slot for this entry
+        val locateBtnY = btnY + btnHeight + 4
+        val locateLabel = "Locate"
+        val locateBtnWidth = font.width(locateLabel) + 10
+
+        // Add Waypoint button - only when Xaero's Minimap is installed, sits
+        // below Locate so the panel grows by one more row instead of crowding.
+        val xaeroPresent = WTFClient.isXaeroPresent()
+        val waypointBtnY = locateBtnY + btnHeight + 4
+        val waypointLabel = "Add Waypoint"
+        val waypointBtnWidth = font.width(waypointLabel) + 10
+        val panelBottom = (if (xaeroPresent) waypointBtnY else locateBtnY) + btnHeight + 4
+
+        val infoWidth = maxOf(font.width(selected.name.string), font.width(detailText), font.width(statusText), btnWidth, if (xaeroPresent) waypointBtnWidth else 0)
         if (blurred) {
-            graphics.fill(infoX - 3, nameY - 4, infoX + infoWidth + 3, nameY + 56, 0xFF2A2A2A.toInt())
+            graphics.fill(infoX - 3, nameY - 4, infoX + infoWidth + 3, panelBottom, 0xFF2A2A2A.toInt())
         }
 
         graphics.text(font, selected.name, infoX, nameY, nameColor, false)
@@ -491,6 +506,20 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         }
         graphics.fill(btnX, btnY, btnX + btnWidth, btnY + btnHeight, bgColor)
         graphics.text(font, Component.literal(btnLabel), btnX + 5, btnY + 3, 0xFFFFFFFF.toInt(), false)
+
+        locateButtonBounds = intArrayOf(btnX, locateBtnY, btnX + locateBtnWidth, locateBtnY + btnHeight)
+        val locateHovered = mouseX in btnX..(btnX + locateBtnWidth) && mouseY in locateBtnY..(locateBtnY + btnHeight)
+        graphics.fill(btnX, locateBtnY, btnX + locateBtnWidth, locateBtnY + btnHeight, if (locateHovered) 0xFF3A6A3A.toInt() else 0xFF2A4A2A.toInt())
+        graphics.text(font, Component.literal(locateLabel), btnX + 5, locateBtnY + 3, 0xFFFFFFFF.toInt(), false)
+
+        if (xaeroPresent) {
+            waypointButtonBounds = intArrayOf(btnX, waypointBtnY, btnX + waypointBtnWidth, waypointBtnY + btnHeight)
+            val waypointHovered = mouseX in btnX..(btnX + waypointBtnWidth) && mouseY in waypointBtnY..(waypointBtnY + btnHeight)
+            graphics.fill(btnX, waypointBtnY, btnX + waypointBtnWidth, waypointBtnY + btnHeight, if (waypointHovered) 0xFF3A4A6A.toInt() else 0xFF2A3A4A.toInt())
+            graphics.text(font, Component.literal(waypointLabel), btnX + 5, waypointBtnY + 3, 0xFFFFFFFF.toInt(), false)
+        } else {
+            waypointButtonBounds = null
+        }
     }
 
     private fun compactLocation(location: String): String {
@@ -574,6 +603,28 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         }
 
         if (button == 0 && mouseX >= leftPanelWidth) {
+            val lBounds = locateButtonBounds
+            val locateSelected = allEntries.find { it.id == selectedId }
+            if (lBounds != null && locateSelected != null &&
+                mouseX >= lBounds[0] && mouseX < lBounds[2] && mouseY >= lBounds[1] && mouseY < lBounds[3]
+            ) {
+                WTFClient.locateEntry(locateSelected)
+                return true
+            }
+        }
+
+        if (button == 0 && mouseX >= leftPanelWidth) {
+            val wBounds = waypointButtonBounds
+            val waypointSelected = allEntries.find { it.id == selectedId }
+            if (wBounds != null && waypointSelected != null &&
+                mouseX >= wBounds[0] && mouseX < wBounds[2] && mouseY >= wBounds[1] && mouseY < wBounds[3]
+            ) {
+                WTFClient.addXaeroWaypoint(waypointSelected)
+                return true
+            }
+        }
+
+        if (button == 0 && mouseX >= leftPanelWidth) {
             val bounds = removeButtonBounds
             val selected = allEntries.find { it.id == selectedId }
             if (bounds != null && selected != null &&
@@ -630,7 +681,14 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
 
     override fun mouseScrolled(mouseX: Double, mouseY: Double, horizontalAmount: Double, verticalAmount: Double): Boolean {
         if (mouseX < leftPanelWidth) {
-            var currentY = ShulkerSection.HEADER_HEIGHT
+            // Must start from the same baseline as the hover/render code
+            // (panelY + 14 title bar, not an arbitrary HEADER_HEIGHT*2) - the
+            // old base offset drifted further out of sync with each section
+            // accumulated, eventually pushing the last section/rows' true Y
+            // range outside what this check thought it was, silently eating
+            // scroll input right where it mattered most (the bottom of a list).
+            val panelY = searchHeight + 10
+            var currentY = panelY + 14
 
             for (type in ShulkerSectionType.entries) {
                 val section = sections[type] ?: continue
