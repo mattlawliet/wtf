@@ -607,13 +607,6 @@ object WTFClient : ClientModInitializer {
         }
         }
 
-        // Player physically opened the chest being located - the world
-        // overlay's job is done, slot-blink (inside the now-open screen)
-        // takes over from here.
-        openChestPos?.let { p ->
-            locateTarget?.let { if (it.pos == p && it.dim == level.dimension().identifier().toString()) locateTarget = null }
-        }
-
         openChestInvSnapshot = if (menu != null) captureInventorySnapshot(menu, mc.player) else mutableMapOf()
 
         if (menu != null) {
@@ -727,6 +720,14 @@ object WTFClient : ClientModInitializer {
         val mc = Minecraft.getInstance() ?: return
         val level = mc.level ?: return
         val player = mc.player ?: return
+
+        // Closed without hovering the highlighted slot (hover already would
+        // have cleared locateTarget) - give it a short decay instead of the
+        // full 20min safety net, so it's gone soon if the player just glanced
+        // in, but reopening right away still shows it.
+        openChestPos?.let { p ->
+            locateTarget?.let { if (it.pos == p && it.dim == level.dimension().identifier().toString()) it.expireAtTick = tickCounter + 200 }
+        }
 
         val menu = (screen as? net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<*>)?.menu ?: return
 
@@ -1132,8 +1133,7 @@ object WTFClient : ClientModInitializer {
     data class UiSettings(
         val previewBlur: Boolean = true,
         val showMatchPercent: Boolean = true,
-        val itemGlow: Boolean = true,
-        val compassStyle: Int = 0
+        val itemGlow: Boolean = true
     )
 
     // Active "Locate" target set by the grid screen's Locate button. pos is
@@ -1143,7 +1143,8 @@ object WTFClient : ClientModInitializer {
         val uuid: String,
         val dim: String,
         val pos: BlockPos?,
-        val startTick: Int
+        val startTick: Int,
+        var expireAtTick: Int = startTick + 24000
     )
 
     private var locateTarget: LocateTarget? = null
@@ -1174,7 +1175,15 @@ object WTFClient : ClientModInitializer {
         val waypointName = "SB: ${entry.name.string}"
         val colorName = XaeroCompat.waypointColorNameFor(shulkerId)
         if (XaeroCompat.addNamedTemporaryWaypoint(pos.x, pos.y, pos.z, waypointName, "SB", colorName)) {
-            player?.sendSystemMessage(Component.literal("Added temporary waypoint to map."))
+            // ChatFormatting shares the same 16 color names Xaero's WaypointColor
+            // uses, so the chat confirmation can match the waypoint's actual color.
+            val chatColor = try {
+                net.minecraft.ChatFormatting.valueOf(colorName)
+            } catch (_: Exception) {
+                net.minecraft.ChatFormatting.WHITE
+            }
+            val nameComponent = Component.literal(entry.name.string).withStyle(chatColor)
+            player?.sendSystemMessage(Component.literal("Added temporary waypoint to map: ").append(nameComponent))
         } else {
             player?.sendSystemMessage(Component.literal("Failed to add waypoint."))
         }
@@ -1265,15 +1274,7 @@ object WTFClient : ClientModInitializer {
 
     fun isShowMatchPercentEnabled(): Boolean = uiSettings.showMatchPercent
 
-    fun getCompassStyle(): Int = uiSettings.compassStyle
-
-    fun setCompassStyle(value: Int) {
-        uiSettings = uiSettings.copy(compassStyle = value)
-        saveUiSettings()
-    }
-
     fun isDebugModeEnabled(): Boolean = debugMode
-    fun isDebugMode(): Boolean = debugMode
 
     fun clearAllRecords() {
         trackedShulkers.clear()
@@ -1362,10 +1363,13 @@ object WTFClient : ClientModInitializer {
             val level = client.level ?: return@register
             tickCounter++
 
-            // Safety-net expiry only - normal clear is "player interacted with the
-            // box" (opened it, or hovered the highlighted slot). 20 min covers a
-            // long walk to a far-off box without the indicator dying mid-trip.
-            locateTarget?.let { if (tickCounter - it.startTick > 24000) locateTarget = null }
+            // Normal clear is "player hovered the highlighted slot." expireAtTick
+            // defaults to a 20min safety net (long walk to a far-off box without
+            // the indicator dying mid-trip), but gets tightened to a short decay
+            // once the matching container/box has been opened-and-closed without
+            // a hover, so it doesn't linger forever if the player just glances
+            // in and walks away.
+            locateTarget?.let { if (tickCounter >= it.expireAtTick) locateTarget = null }
 
             // 1. Handle pending item entities (block -> item)
             if (pendingItemEntities.isNotEmpty()) {
@@ -2048,8 +2052,12 @@ object WTFClient : ClientModInitializer {
         val coordStr = "${pos.x},${pos.y},${pos.z}"
         val dimStr = level.dimension().identifier().toString()
 
-        // Player physically opened the box being located - job done, stop pointing at it.
-        locateTarget?.let { if (it.pos == pos && it.dim == dimStr) locateTarget = null }
+        // Don't clear here - that used to kill the slot-blink before it ever
+        // got a chance to render inside this very screen. World overlay/HUD
+        // compass are suppressed independently while any screen is open
+        // (see LocateCompassHud/LocateWorldOverlay); the actual clear is
+        // "hovered the slot," with a decay set on close (handleShulkerScreenClosed)
+        // if the player closes without hovering.
 
         // Get held shulker UUID to exclude from hash matching
         val heldStack = player.inventoryMenu.getSlot(player.inventory.selectedSlot).item
@@ -2218,6 +2226,11 @@ object WTFClient : ClientModInitializer {
     }
 
     private fun handleShulkerScreenClosed(screen: ShulkerBoxScreen) {
+        // Closed without hovering the slot inside (hover would've cleared
+        // locateTarget already) - matches by uuid, not position, since the
+        // player's hitResult (used to derive a pos) may already point
+        // elsewhere by the time the screen actually closes.
+        locateTarget?.let { if (it.uuid == openShulkerKey) it.expireAtTick = tickCounter + 200 }
         openShulkerKey = null
         val mc = Minecraft.getInstance()
         val level = mc.level ?: return
@@ -2683,7 +2696,6 @@ object WTFClient : ClientModInitializer {
                 section = entry.state,
                 location = location,
                 shortHash = entry.uuid.take(6),
-                serial = 0,
                 items = items,
                 cachedContentsNbt = entry.cachedContents,
                 from = entry.from,

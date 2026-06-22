@@ -12,6 +12,14 @@ import net.minecraft.world.item.ItemStack
 class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal("Happy Shulkers")) {
     private val allEntries = entries.toMutableList()
     private var searchField: EditBox? = null
+    // The keybinding press that opens this screen still has a pending GLFW
+    // char callback in flight when the search field grabs focus - without
+    // this, that same keystroke types itself straight into the search box
+    // the instant the list opens, silently filtering out every box that
+    // doesn't happen to contain that character. A short window instead of
+    // a single swallowed event, since holding the key a bit longer than a
+    // quick tap can fire more than one char callback before release.
+    private val suppressCharsUntil = System.currentTimeMillis() + 150
     private val sections = mutableMapOf<ShulkerSectionType, ShulkerSection>()
     private var sectionHeights = mapOf<ShulkerSection, Int>()
     private val previewItemsById = mutableMapOf<String, List<ItemStack>>()
@@ -29,6 +37,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private var blurButtonBounds: IntArray? = null
     private var glowButtonBounds: IntArray? = null
     private var clearAllButtonBounds: IntArray? = null
+    private var pendingClearAll = false
     private var infoBounds: IntArray? = null
     private var showInfo = false
 
@@ -39,8 +48,12 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private val topBarButtonWidth = 70
 
     override fun init() {
-        // glowX = width-285; leave 5px gap on left and right of search bar
-        val field = EditBox(font, 5, 5, width - 295, searchHeight,
+        // glowX = width-285; leave 5px gap on left and right of search bar.
+        // Debug mode adds a 4th top-bar button (Clear All) further left of
+        // glow, which the fixed width-295 never accounted for - shrink by
+        // one more button+gap so they don't end up touching.
+        val debugButtonReserve = if (WTFClient.isDebugModeEnabled()) topBarButtonWidth + 5 else 0
+        val field = EditBox(font, 5, 5, width - 295 - debugButtonReserve, searchHeight,
             Component.literal("Search shulkers..."))
         field.setResponder { text ->
             searchQuery = text
@@ -197,13 +210,24 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         renderToggleButton(graphics, percentButtonBounds!!, "Match %", percentOn, mouseX, mouseY)
         renderToggleButton(graphics, blurButtonBounds!!, "Blur BG", blurOn, mouseX, mouseY)
 
-        if (WTFClient.isDebugMode()) {
+        if (WTFClient.isDebugModeEnabled()) {
             val clearX = glowX - 5 - topBarButtonWidth
             clearAllButtonBounds = intArrayOf(clearX, 5, clearX + topBarButtonWidth, 5 + btnHeight)
-            renderToggleButton(graphics, clearAllButtonBounds!!, "Clear All", false, mouseX, mouseY)
+            val label = if (pendingClearAll) "Confirm?" else "Clear all"
+            renderDangerButton(graphics, clearAllButtonBounds!!, label, mouseX, mouseY)
         } else {
             clearAllButtonBounds = null
+            pendingClearAll = false
         }
+    }
+
+    private fun renderDangerButton(graphics: GuiGraphicsExtractor, bounds: IntArray, label: String, mouseX: Int, mouseY: Int) {
+        val (x0, y0, x1, y1) = bounds
+        val isHovered = mouseX in x0..x1 && mouseY in y0..y1
+        val bgColor = if (isHovered) 0xFFCC2222.toInt() else 0xFF992222.toInt()
+        graphics.fill(x0, y0, x1, y1, bgColor)
+        val textWidth = font.width(label)
+        graphics.text(font, Component.literal(label), x0 + (x1 - x0 - textWidth) / 2, y0 + (y1 - y0 - 8) / 2, 0xFFFFFFFF.toInt(), false)
     }
 
     private fun renderToggleButton(graphics: GuiGraphicsExtractor, bounds: IntArray, label: String, on: Boolean, mouseX: Int, mouseY: Int) {
@@ -564,6 +588,11 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         graphics.setTooltipForNextFrame(font, item, mouseX, mouseY)
     }
 
+    override fun charTyped(event: net.minecraft.client.input.CharacterEvent): Boolean {
+        if (System.currentTimeMillis() < suppressCharsUntil) return true
+        return super.charTyped(event)
+    }
+
     override fun mouseClicked(mouseButtonEvent: MouseButtonEvent, bl: Boolean): Boolean {
         val mouseX = mouseButtonEvent.x
         val mouseY = mouseButtonEvent.y
@@ -587,8 +616,12 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             }
             val cBounds = clearAllButtonBounds
             if (cBounds != null && mouseX >= cBounds[0] && mouseX < cBounds[2] && mouseY >= cBounds[1] && mouseY < cBounds[3]) {
-                WTFClient.clearAllRecords()
-                onClose()
+                if (pendingClearAll) {
+                    WTFClient.clearAllRecords()
+                    onClose()
+                } else {
+                    pendingClearAll = true
+                }
                 return true
             }
         }
@@ -660,7 +693,14 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
                 currentY += ShulkerSection.HEADER_HEIGHT
 
                 if (!section.isCollapsed) {
-                    val contentHeight = section.getTotalContentHeight()
+                    // Must be the section's actual allotted screen space
+                    // (sectionHeights, the dynamic per-frame budget render
+                    // uses), not its full unclamped content height - using
+                    // the latter sized this section's click region as if it
+                    // owned way more screen than it was actually given,
+                    // swallowing clicks meant for whatever section renders
+                    // next in that space.
+                    val contentHeight = sectionHeights[section] ?: 0
                     if (mouseY >= currentY && mouseY < currentY + contentHeight) {
                         val localY = (mouseY - currentY).toInt()
                         val entry = section.getEntryAtPosition(localY)

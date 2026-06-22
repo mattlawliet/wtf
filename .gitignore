@@ -39,3 +39,9 @@ replay_*.log
 # Libraries/Sources that shouldn't be here (if they are external)
 # Based on the project structure, 'net/' seems to contain external code
 /net/
+
+# Local scratch / built artifacts not meant for the repo
+/tmp/
+/releases/
+/.understand-anything/
+.ponytail-audit-*.md

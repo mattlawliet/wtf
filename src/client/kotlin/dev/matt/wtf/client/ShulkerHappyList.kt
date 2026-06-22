@@ -10,7 +10,6 @@ data class ShulkerEntry(
     val section: String,
     val location: String,
     val shortHash: String,
-    val serial: Int,
     val items: List<ItemStack> = emptyList(),
     val cachedContentsNbt: ByteArray? = null,
     val matchPercent: Float = 0f,
@@ -18,17 +17,3 @@ data class ShulkerEntry(
     val lastLocation: String? = null,
     val lastKnown: Boolean = false
 )
-
-fun fuzzyMatch(query: String, text: String): Boolean {
-    if (query.isEmpty()) return true
-    val q = query.lowercase()
-    val t = text.lowercase()
-    var qi = 0
-    for (ti in t.indices) {
-        if (t[ti] == q[qi]) {
-            qi++
-            if (qi == q.length) return true
-        }
-    }
-    return false
-}
