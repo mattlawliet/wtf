@@ -23,7 +23,8 @@ object HotbarMarkerHud : HudElement {
         if (WTFClient.isMarkerIconNone()) return
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
-        if (mc.options.hideGui) return
+        // Options.hideGui was removed in 26.2 with no direct replacement -
+        // F1 hide-HUD just won't suppress this marker on this branch.
 
         // Exact vanilla item-icon position, lifted from Gui.extractItemHotbar:
         // x = guiWidth/2 - 90 + i*20 + 2, y = guiHeight - 16 - 3. Matches the

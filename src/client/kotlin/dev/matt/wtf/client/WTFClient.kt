@@ -1352,7 +1352,7 @@ object WTFClient : ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             while (keyBinding.consumeClick()) {
                 val entries = resolveHappyShulkers()
-                client.setScreen(ShulkerGridScreen(entries))
+                client.setScreenAndShow(ShulkerGridScreen(entries))
             }
 
             while (toggleHappyKeyBinding?.consumeClick() == true) {
@@ -1386,7 +1386,7 @@ object WTFClient : ClientModInitializer {
                     continue
                 }
 
-                val center = pending.pos.center
+                val center = net.minecraft.world.phys.Vec3.atCenterOf(pending.pos)
                 val items = level.getEntitiesOfClass(ItemEntity::class.java, AABB.ofSize(center, 4.0, 4.0, 4.0))
                 val found = items
                     .asSequence()
@@ -1762,7 +1762,7 @@ object WTFClient : ClientModInitializer {
             dispatcher.register(ClientCommands.literal("wtf")
                 .executes {
                     val entries = resolveHappyShulkers()
-                    Minecraft.getInstance().setScreen(ShulkerGridScreen(entries))
+                    Minecraft.getInstance().setScreenAndShow(ShulkerGridScreen(entries))
                     1
                 }
                 .then(ClientCommands.literal("debug")
@@ -1770,7 +1770,7 @@ object WTFClient : ClientModInitializer {
                         debugMode = !debugMode
                         debugVerbose = false
                         val status = if (debugMode) "§aon§f" else "§coff§f"
-                        Minecraft.getInstance().gui.chat.addClientSystemMessage(
+                        Minecraft.getInstance().gui.hud.getChat().addClientSystemMessage(
                             Component.literal("§7[§fWTF§f] Debug $status")
                         )
                         if (debugMode) {
@@ -1807,7 +1807,7 @@ object WTFClient : ClientModInitializer {
                                 debugVerbose = !debugVerbose
                             }
                             val status = if (debugVerbose) "§averbose§f" else if (debugMode) "§aon (standard)§f" else "§coff§f"
-                            Minecraft.getInstance().gui.chat.addClientSystemMessage(
+                            Minecraft.getInstance().gui.hud.getChat().addClientSystemMessage(
                                 Component.literal("§7[§fWTF§f] Debug $status")
                             )
                             1
@@ -3031,7 +3031,7 @@ object WTFClient : ClientModInitializer {
     // can be fingerprinted/cached without placing or opening the box.
     private fun toggleHappyForHoveredSlot() {
         val mc = Minecraft.getInstance()
-        val screen = mc.screen
+        val screen = mc.gui.screen()
 
         // When a placed shulker block is open, the keybind should toggle the
         // block itself - not whatever content slot the cursor happens to hover.
@@ -3180,7 +3180,7 @@ object WTFClient : ClientModInitializer {
         // Strip Private Use Area chars: some resource packs (e.g. Redstone Tweaks)
         // map these to large guide-table bitmaps, blowing up chat if present in item names.
         val sanitized = msg.replace(Regex("[\\uE000-\\uF8FF]"), "")
-        Minecraft.getInstance().gui.chat.addClientSystemMessage(Component.literal("§7[§fWTF§7] §f$sanitized"))
+        Minecraft.getInstance().gui.hud.getChat().addClientSystemMessage(Component.literal("§7[§fWTF§7] §f$sanitized"))
         log(msg)
     }
 
