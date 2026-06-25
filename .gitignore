@@ -45,3 +45,8 @@ replay_*.log
 /releases/
 /.understand-anything/
 .ponytail-audit-*.md
+/graphify-out/
+/.antigravitycli/
+.env
+maya_algo_template.md
+maya_json_template.json
