@@ -9,9 +9,10 @@
 	],
 	"contact": {
 		"homepage": "https://github.com/mattlawliet/wtf",
-		"sources": "https://github.com/mattlawliet/wtf"
+		"sources": "https://github.com/mattlawliet/wtf",
+		"issues": "https://github.com/mattlawliet/wtf/issues"
 	},
-	"license": "MIT",
+	"license": "CC0-1.0",
 	"icon": "assets/wtf/icon.png",
 	"environment": "*",
 	"entrypoints": {
@@ -29,7 +30,6 @@
 		]
 	},
 	"mixins": [
-		"wtf.mixins.json",
 		{
 			"config": "wtf.client.mixins.json",
 			"environment": "client"
@@ -37,7 +37,7 @@
 	],
 	"depends": {
 		"fabricloader": ">=0.19.2",
-		"minecraft": ">=26.1.2",
+		"minecraft": "~26.2",
 		"java": ">=25",
 		"fabric-api": "*",
 		"fabric-language-kotlin": "*"

@@ -30,6 +30,21 @@ loom {
 	}
 }
 
+// ShulkerIdentityResolver is pure (maps in, uuid out), so its tests run on a
+// plain JVM - no Minecraft bootstrap. Wire the client source set onto the test
+// classpath so they can see it.
+sourceSets {
+	test {
+		compileClasspath += sourceSets["client"].output + sourceSets["client"].compileClasspath
+		runtimeClasspath += sourceSets["client"].output + sourceSets["client"].runtimeClasspath
+	}
+}
+
+tasks.test {
+	useJUnitPlatform()
+	testLogging { events("failed") }
+}
+
 dependencies {
 	// To change the versions see the gradle.properties file
 	minecraft("com.mojang:minecraft:${providers.gradleProperty("minecraft_version").get()}")
@@ -39,8 +54,10 @@ dependencies {
 	implementation("net.fabricmc.fabric-api:fabric-api:${providers.gradleProperty("fabric_api_version").get()}")
 	implementation("net.fabricmc:fabric-language-kotlin:${providers.gradleProperty("fabric_kotlin_version").get()}")
 
-	// Sodium not yet available for 26.1.2 - remove until updated
-	// modRuntimeOnly("maven.modrinth:sodium:mc1.21.11-0.8.11-fabric")
+	testImplementation(kotlin("test"))
+
+	// Sodium has no 26.2 build yet; re-enable when one ships.
+	// modRuntimeOnly("maven.modrinth:sodium:mc26.2-fabric")
 }
 
 tasks.processResources {
@@ -81,9 +98,10 @@ tasks.jar {
 	}
 }
 
-// Debug variant: same build, plus a /wtf_debug.flag marker resource that
-// makes WTFClient default debugMode = true (see WTFClient.kt). Produces
-// "<name>-<version>_debug.jar" alongside the normal jar.
+// Debug variant: the shipped jar plus a /wtf_debug.flag marker resource, which
+// WTFClient looks up on the classpath to default debugMode = true (see
+// WTFClient.debugMode). Produces "<name>-<version>_debug.jar" next to the
+// normal jar.
 val debugMarkerDir = layout.buildDirectory.dir("wtf-debug-marker")
 
 val generateDebugMarker = tasks.register("generateDebugMarker") {

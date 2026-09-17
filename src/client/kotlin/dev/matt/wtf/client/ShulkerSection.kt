@@ -11,10 +11,18 @@ class ShulkerSection(
     companion object {
         const val HEADER_HEIGHT = 14
         const val ROW_HEIGHT = 17
+        const val INDICATOR_HEIGHT = 10
     }
 
     var scrollOffset = 0
     var isCollapsed = false
+    // Set every renderEntries() call to the section's actual allotted height
+    // this frame (it's dynamic - shrinks/grows with panel size and how many
+    // other sections are expanded). scroll()'s clamp used to assume a fixed
+    // 100px, which didn't match the real visible area and could let you
+    // scroll past where entries stop fully filling it, hiding rows that
+    // should still be on screen.
+    private var lastVisibleHeight = 100
 
     fun toggleCollapse() {
         isCollapsed = !isCollapsed
@@ -23,14 +31,22 @@ class ShulkerSection(
 
     fun getTotalContentHeight() = entries.size * ROW_HEIGHT
 
+    // Mirrors renderEntries()'s actual end-state instead of a naive
+    // entries.size*ROW_HEIGHT - visibleHeight, which ignored the top
+    // indicator bar's 10px reservation once scrolled away from row 0 - that
+    // shortfall made the clamp stick one row short of the real end, only
+    // escapable by something else (e.g. a click-driven nudge) landing on a
+    // scrollOffset value the broken math happened to allow.
     fun scroll(delta: Int) {
         if (isCollapsed) return
-        val maxScroll = maxOf(0, entries.size * ROW_HEIGHT - 100)
+        val fitsWithoutScrolling = entries.size * ROW_HEIGHT <= lastVisibleHeight
+        val maxScroll = if (fitsWithoutScrolling) {
+            0
+        } else {
+            val rowsVisibleAtEnd = maxOf(1, (lastVisibleHeight - INDICATOR_HEIGHT) / ROW_HEIGHT)
+            maxOf(0, entries.size - rowsVisibleAtEnd) * ROW_HEIGHT
+        }
         scrollOffset = (scrollOffset + delta).coerceIn(0, maxScroll)
-    }
-
-    fun resetScroll() {
-        scrollOffset = 0
     }
 
     fun renderHeader(graphics: GuiGraphicsExtractor, font: Font, x: Int, y: Int, width: Int) {
@@ -78,8 +94,9 @@ class ShulkerSection(
 
     fun renderEntries(graphics: GuiGraphicsExtractor, font: Font, x: Int, y: Int, width: Int, visibleHeight: Int, hoveredId: String?, selectedId: String?) {
         if (isCollapsed) return
+        lastVisibleHeight = visibleHeight
 
-        val indicatorH = 10
+        val indicatorH = INDICATOR_HEIGHT
         val startRow = (scrollOffset / ROW_HEIGHT).coerceAtLeast(0)
         val showTop = startRow > 0
 
@@ -114,9 +131,21 @@ class ShulkerSection(
         }
     }
 
+    // Must mirror renderEntries() exactly: startRow snaps to whole rows (raw
+    // scrollOffset can land mid-row from mouse-wheel deltas that aren't a
+    // clean multiple of ROW_HEIGHT), and the top "N hidden" indicator bar
+    // shifts the first visible row down by indicatorH px. Using raw
+    // localY+scrollOffset here (without either adjustment) used to drift out
+    // of sync with what's actually drawn, showing up as hover/click landing
+    // on the wrong row once you'd scrolled even slightly off a row boundary.
     fun getEntryAtPosition(localY: Int): ShulkerListRow? {
         if (isCollapsed) return null
-        val rowIndex = (localY + scrollOffset) / ROW_HEIGHT
+        val indicatorH = INDICATOR_HEIGHT
+        val startRow = (scrollOffset / ROW_HEIGHT).coerceAtLeast(0)
+        val showTop = startRow > 0
+        val adjustedLocalY = if (showTop) localY - indicatorH else localY
+        if (adjustedLocalY < 0) return null
+        val rowIndex = startRow + adjustedLocalY / ROW_HEIGHT
         return if (rowIndex in entries.indices) entries[rowIndex] else null
     }
 }

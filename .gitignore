@@ -40,17 +40,14 @@ replay_*.log
 # Based on the project structure, 'net/' seems to contain external code
 /net/
 
-# Build/dev artifacts, not needed to build
+# Local scratch / built artifacts not meant for the repo
 /tmp/
 /releases/
-/graphify-out/
 /.understand-anything/
+.ponytail-audit-*.md
+ARCHITECTURE-REVIEW-*.md
+/graphify-out/
+/.antigravitycli/
 .env
-.antigravitycli/
-.claude/
-.ponytail-audit*.md
-AGENTS.md
-CHECKLIST.md
-CLAUDE.md
 maya_algo_template.md
 maya_json_template.json

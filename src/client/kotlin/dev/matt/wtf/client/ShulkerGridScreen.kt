@@ -12,37 +12,77 @@ import net.minecraft.world.item.ItemStack
 class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal("Happy Shulkers")) {
     private val allEntries = entries.toMutableList()
     private var searchField: EditBox? = null
+    // The keybinding press that opens this screen still has a pending GLFW
+    // char callback in flight when the search field grabs focus - without
+    // this, that same keystroke types itself straight into the search box
+    // the instant the list opens, silently filtering out every box that
+    // doesn't happen to contain that character. A short window instead of
+    // a single swallowed event, since holding the key a bit longer than a
+    // quick tap can fire more than one char callback before release.
+    private val suppressCharsUntil = System.currentTimeMillis() + 150
     private val sections = mutableMapOf<ShulkerSectionType, ShulkerSection>()
     private var sectionHeights = mapOf<ShulkerSection, Int>()
     private val previewItemsById = mutableMapOf<String, List<ItemStack>>()
     // Lowercased item display names per entry, computed once — building display
     // names is too costly to redo on every search keystroke.
     private val searchNamesById = mutableMapOf<String, List<String>>()
+    // Tag paths of everything inside each box ("ores", "logs", "planks"), kept
+    // OUT of searchNamesById on purpose: that one is a concatenated blob scored
+    // by fuzzyMatchPercent as query.length / span, and appending a dozen tags per
+    // item would stretch those spans and quietly change what MIN_MATCH means.
+    // These are matched by prefix under a "#" instead, so free-text ranking is
+    // exactly what it was.
+    private val searchTagsById = mutableMapOf<String, Set<String>>()
     private var selectedId: String? = null
     private var hoveredId: String? = null
     private var searchQuery = ""
     private var pendingRemoveId: String? = null
     private var removeButtonBounds: IntArray? = null
+    private var locateButtonBounds: IntArray? = null
+    private var waypointButtonBounds: IntArray? = null
     private var percentButtonBounds: IntArray? = null
     private var blurButtonBounds: IntArray? = null
     private var glowButtonBounds: IntArray? = null
     private var clearAllButtonBounds: IntArray? = null
+    private var pendingClearAll = false
+    private var refreshTicks = 0
+    private var lastSignature: String? = null
     private var infoBounds: IntArray? = null
     private var showInfo = false
 
     private val leftPanelWidth: Int
         get() = (width * 0.22f).toInt().coerceIn(130, 220)
 
+    // A subsequence hit below this is noise - the query's letters happening to
+    // appear in order, spread across a name that has nothing to do with it.
+    // Substring hits score 1f and are never affected by this.
+    //
+    // 0.5 rather than 0.6 so a vowel-dropped abbreviation still lands: "dmnd"
+    // on "diamond" spans 7 characters for 4, which is 0.57. The nearest noise
+    // in testing was 0.27, so there is room under it.
+    private val MIN_MATCH = 0.5f
+
     private val searchHeight = 20
     private val topBarButtonWidth = 70
+    private val REFRESH_INTERVAL_TICKS = 20
 
     override fun init() {
-        // glowX = width-285; leave 5px gap on left and right of search bar
-        val field = EditBox(font, 5, 5, width - 295, searchHeight,
+        // glowX = width-285; leave 5px gap on left and right of search bar.
+        // Debug mode adds a 4th top-bar button (Clear All) further left of
+        // glow, which the fixed width-295 never accounted for - shrink by
+        // one more button+gap so they don't end up touching.
+        val debugButtonReserve = if (WTFClient.isDebugModeEnabled()) topBarButtonWidth + 5 else 0
+        // Clamped: leftPanelWidth is, but this wasn't, so a narrow window or a
+        // large GUI scale handed EditBox a negative width.
+        val searchWidth = (width - 295 - debugButtonReserve).coerceAtLeast(40)
+        val field = EditBox(font, 5, 5, searchWidth, searchHeight,
             Component.literal("Search shulkers..."))
         field.setResponder { text ->
             searchQuery = text
             rebuildSections(text)
+            // After rebuild, so the tag cache is populated by the query that just
+            // ran - typing "#" alone matches everything, which fills it.
+            field.setSuggestion(completionFor(text))
         }
         field.isFocused = true
         addRenderableWidget(field)
@@ -78,7 +118,86 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         rebuildSections("")
     }
 
+    // The list was a snapshot taken at open: a box that moved while you were
+    // reading kept showing its old location until you reopened the screen.
+    // Re-resolve on a 1s cadence and only rebuild when something actually
+    // changed, carrying scroll position and collapsed state across the rebuild
+    // so the list doesn't jump under the cursor.
+    override fun tick() {
+        if (++refreshTicks < REFRESH_INTERVAL_TICKS) return
+        refreshTicks = 0
+
+        val fresh = WTFClient.resolveHappyShulkers()
+        val signature = fresh.joinToString("|") { "${it.id}\u0000${it.section}\u0000${it.location}\u0000${it.lastKnown}" }
+        if (signature == lastSignature) return
+        lastSignature = signature
+
+        val scrollByType = sections.mapValues { it.value.scrollOffset }
+        val collapsedTypes = sections.filterValues { it.isCollapsed }.keys.toSet()
+
+        allEntries.clear()
+        allEntries.addAll(fresh)
+        val liveIds = fresh.mapTo(mutableSetOf()) { it.id }
+        previewItemsById.keys.retainAll(liveIds)
+        searchNamesById.keys.retainAll(liveIds)
+        searchTagsById.keys.retainAll(liveIds)
+        if (selectedId !in liveIds) selectedId = null
+
+        rebuildSections(searchQuery)
+
+        for ((type, section) in sections) {
+            scrollByType[type]?.let { section.scrollOffset = it }
+            if (type in collapsedTypes) section.isCollapsed = true
+        }
+    }
+
+    // Tags come from the registry sync, so before the server has sent them this
+    // is simply empty and "#ores" finds nothing - which is the right way to fail.
+    private fun tagPathsOf(items: List<ItemStack>): Set<String> {
+        val out = mutableSetOf<String>()
+        for (stack in items) {
+            if (stack.isEmpty) continue
+            stack.item.builtInRegistryHolder().tags().forEach { out.add(it.location().getPath()) }
+        }
+        return out
+    }
+
+    // The tail of the best candidate, which EditBox draws grey after the cursor.
+    // Prefix, never fuzzy: ghost text has to continue what you typed, and a
+    // completion that doesn't is indistinguishable from a bug. Item names are
+    // deliberately not candidates - there are hundreds and suggesting one per
+    // keystroke reads as noise; box names and tags are few and worth guessing at.
+    private fun completionFor(text: String): String {
+        if (text.isEmpty()) return ""
+        val q = text.lowercase()
+        val pool: Sequence<String> = if (text.startsWith("#")) {
+            searchTagsById.values.asSequence().flatten().distinct().map { "#$it" }
+        } else {
+            allEntries.asSequence().map { it.name.string }
+        }
+        return pool
+            .filter { it.length > text.length && it.lowercase().startsWith(q) }
+            .minByOrNull { it.length }
+            ?.substring(text.length)
+            ?: ""
+    }
+
+    override fun keyPressed(event: net.minecraft.client.input.KeyEvent): Boolean {
+        // Tab accepts the suggestion, the way chat's does. Only when there is one
+        // to accept, so tab keeps its normal behaviour otherwise.
+        val field = searchField
+        if (event.key() == org.lwjgl.glfw.GLFW.GLFW_KEY_TAB && field != null && field.isFocused) {
+            val completion = completionFor(field.value)
+            if (completion.isNotEmpty()) {
+                field.value = field.value + completion
+                return true
+            }
+        }
+        return super.keyPressed(event)
+    }
+
     private fun rebuildSections(query: String) {
+        val tagQuery = if (query.startsWith("#")) query.removePrefix("#").lowercase() else null
         sections.clear()
 
         val blockEntries = mutableListOf<ShulkerListRow>()
@@ -106,22 +225,33 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             }
 
             val items = previewItemsById.getOrPut(entry.id) {
-                entry.items.takeIf { it.size == 27 }
+                entry.items.takeIf { it.size == SHULKER_SLOTS }
                     ?: entry.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems)
-                    ?: List(27) { ItemStack.EMPTY }
+                    ?: List(SHULKER_SLOTS) { ItemStack.EMPTY }
             }
-            val matchPercent = if (query.isEmpty()) 0f else {
-                val itemNames = searchNamesById.getOrPut(entry.id) {
-                    items.mapNotNull {
-                        if (it.isEmpty) null else {
-                            val id = BuiltInRegistries.ITEM.getKey(it.item).toString()
-                            "${it.displayName.string.lowercase()} $id ${id.removePrefix("minecraft:")}"
+            val matchPercent = when {
+                query.isEmpty() -> 0f
+                // "#ores" - what is INSIDE the box, by tag. "#" alone matches
+                // everything, which is what makes the completion useful: nobody
+                // can guess tag names, so the suggestion has to come before the
+                // first real keystroke.
+                tagQuery != null -> {
+                    val tags = searchTagsById.getOrPut(entry.id) { tagPathsOf(items) }
+                    if (tagQuery.isEmpty() || tags.any { it.startsWith(tagQuery) }) 1f else 0f
+                }
+                else -> {
+                    val itemNames = searchNamesById.getOrPut(entry.id) {
+                        items.mapNotNull {
+                            if (it.isEmpty) null else {
+                                val id = BuiltInRegistries.ITEM.getKey(it.item).toString()
+                                "${it.displayName.string.lowercase()} $id ${id.removePrefix("minecraft:")}"
+                            }
                         }
                     }
+                    fuzzyMatchPercent(query, entry.name.string, itemNames)
                 }
-                fuzzyMatchPercent(query, entry.name.string, itemNames)
             }
-            if (matchPercent > 0f || query.isEmpty()) {
+            if (matchPercent >= MIN_MATCH || query.isEmpty()) {
                 rows.add(ShulkerListRow(
                     id = entry.id,
                     name = entry.name,
@@ -198,10 +328,21 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         if (WTFClient.isDebugModeEnabled()) {
             val clearX = glowX - 5 - topBarButtonWidth
             clearAllButtonBounds = intArrayOf(clearX, 5, clearX + topBarButtonWidth, 5 + btnHeight)
-            renderToggleButton(graphics, clearAllButtonBounds!!, "Clear All", false, mouseX, mouseY)
+            val label = if (pendingClearAll) "Confirm?" else "Clear all"
+            renderDangerButton(graphics, clearAllButtonBounds!!, label, mouseX, mouseY)
         } else {
             clearAllButtonBounds = null
+            pendingClearAll = false
         }
+    }
+
+    private fun renderDangerButton(graphics: GuiGraphicsExtractor, bounds: IntArray, label: String, mouseX: Int, mouseY: Int) {
+        val (x0, y0, x1, y1) = bounds
+        val isHovered = mouseX in x0..x1 && mouseY in y0..y1
+        val bgColor = if (isHovered) 0xFFCC2222.toInt() else 0xFF992222.toInt()
+        graphics.fill(x0, y0, x1, y1, bgColor)
+        val textWidth = font.width(label)
+        graphics.text(font, Component.literal(label), x0 + (x1 - x0 - textWidth) / 2, y0 + (y1 - y0 - 8) / 2, 0xFFFFFFFF.toInt(), false)
     }
 
     private fun renderToggleButton(graphics: GuiGraphicsExtractor, bounds: IntArray, label: String, on: Boolean, mouseX: Int, mouseY: Int) {
@@ -270,25 +411,18 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             if (!section.isCollapsed) {
                 val sectionH = sectionHeights[section] ?: 0
                 if (sectionH > 0) {
+                    // Clip each section to its own band. This used to be handled
+                    // by re-drawing every header in a second pass to cover the
+                    // bleed-through, which computed and submitted all the header
+                    // geometry twice per frame.
+                    graphics.enableScissor(0, currentY, leftPanelWidth, currentY + sectionH)
                     section.renderEntries(graphics, font, 0, currentY, leftPanelWidth, sectionH, hoveredId, selectedId)
+                    graphics.disableScissor()
                     currentY += sectionH
                 }
             }
 
             if (currentY >= panelY + panelHeight) break
-        }
-
-        // Second pass: re-render section headers on top so scrolling entries
-        // don't bleed over them.
-        var headerY = panelY + titleBarH
-        for (type in ShulkerSectionType.entries) {
-            val section = sections[type] ?: continue
-            section.renderHeader(graphics, font, 0, headerY, leftPanelWidth)
-            headerY += ShulkerSection.HEADER_HEIGHT
-            if (!section.isCollapsed) {
-                headerY += sectionHeights[section] ?: 0
-            }
-            if (headerY >= panelY + panelHeight) break
         }
 
         hoveredId = null
@@ -369,9 +503,9 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         }
 
         val items = previewItemsById[selected.id]
-            ?: selected.items.takeIf { it.size == 27 }
+            ?: selected.items.takeIf { it.size == SHULKER_SLOTS }
             ?: selected.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems)
-            ?: List(27) { ItemStack.EMPTY }
+            ?: List(SHULKER_SLOTS) { ItemStack.EMPTY }
 
         val cellSize = 22
         val cellPadding = 2
@@ -381,21 +515,34 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         val gridStartY = (panelY + (panelHeight - contentHeight) / 2).coerceAtLeast(panelY + 10)
 
         val q = searchQuery.lowercase()
-        val matchingSlots: Set<Int> = if (q.isNotEmpty()) {
-            val itemNames = searchNamesById[selected.id] ?: emptyList()
-            val allSlotNames = items.map { stack ->
-                if (stack.isEmpty) null else {
-                    val id = BuiltInRegistries.ITEM.getKey(stack.item).toString()
-                    "${stack.displayName.string.lowercase()} $id ${id.removePrefix("minecraft:")}"
+        val previewTagQuery = if (q.startsWith("#")) q.removePrefix("#") else null
+        val matchingSlots: Set<Int> = when {
+            // A tag query has to highlight by tag. Comparing "#enchantables"
+            // against item NAMES matched nothing, so the row came back with no
+            // green slots and looked like it had been picked at random - the box
+            // did contain something enchantable, and nothing said which.
+            previewTagQuery != null -> if (previewTagQuery.isEmpty()) emptySet() else
+                (0 until SHULKER_SLOTS).filter { i ->
+                    val stack = items.getOrNull(i) ?: return@filter false
+                    !stack.isEmpty && stack.item.builtInRegistryHolder().tags()
+                        .anyMatch { it.location().getPath().startsWith(previewTagQuery) }
+                }.toSet()
+            q.isNotEmpty() -> {
+                val allSlotNames = items.map { stack ->
+                    if (stack.isEmpty) null else {
+                        val id = BuiltInRegistries.ITEM.getKey(stack.item).toString()
+                        "${stack.displayName.string.lowercase()} $id ${id.removePrefix("minecraft:")}"
+                    }
                 }
+                (0 until SHULKER_SLOTS).filter { i ->
+                    val name = allSlotNames.getOrNull(i) ?: return@filter false
+                    fuzzyMatchScore(q, name) >= MIN_MATCH
+                }.toSet()
             }
-            (0 until 27).filter { i ->
-                val name = allSlotNames.getOrNull(i) ?: return@filter false
-                fuzzyMatchScore(q, name) > 0f
-            }.toSet()
-        } else emptySet()
+            else -> emptySet()
+        }
 
-        for (i in 0 until 27) {
+        for (i in 0 until SHULKER_SLOTS) {
             val col = i % 9
             val row = i / 9
             val x = gridStartX + col * (cellSize + cellPadding)
@@ -473,9 +620,22 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         val btnWidth = font.width(btnLabel) + 10
         val btnHeight = 14
 
-        val infoWidth = maxOf(font.width(selected.name.string), font.width(detailText), font.width(statusText), btnWidth)
+        // Locate button - points HUD compass / blinks overlay or slot for this entry
+        val locateBtnY = btnY + btnHeight + 4
+        val locateLabel = if (WTFClient.getLocateTarget()?.uuid == selected.id) "Un-locate" else "Locate"
+        val locateBtnWidth = font.width(locateLabel) + 10
+
+        // Add Waypoint button - only when Xaero's Minimap is installed, sits
+        // below Locate so the panel grows by one more row instead of crowding.
+        val xaeroPresent = WTFClient.isXaeroPresent()
+        val waypointBtnY = locateBtnY + btnHeight + 4
+        val waypointLabel = "Add Waypoint"
+        val waypointBtnWidth = font.width(waypointLabel) + 10
+        val panelBottom = (if (xaeroPresent) waypointBtnY else locateBtnY) + btnHeight + 4
+
+        val infoWidth = maxOf(font.width(selected.name.string), font.width(detailText), font.width(statusText), btnWidth, if (xaeroPresent) waypointBtnWidth else 0)
         if (blurred) {
-            graphics.fill(infoX - 3, nameY - 4, infoX + infoWidth + 3, nameY + 56, 0xFF2A2A2A.toInt())
+            graphics.fill(infoX - 3, nameY - 4, infoX + infoWidth + 3, panelBottom, 0xFF2A2A2A.toInt())
         }
 
         graphics.text(font, selected.name, infoX, nameY, nameColor, false)
@@ -491,6 +651,20 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         }
         graphics.fill(btnX, btnY, btnX + btnWidth, btnY + btnHeight, bgColor)
         graphics.text(font, Component.literal(btnLabel), btnX + 5, btnY + 3, 0xFFFFFFFF.toInt(), false)
+
+        locateButtonBounds = intArrayOf(btnX, locateBtnY, btnX + locateBtnWidth, locateBtnY + btnHeight)
+        val locateHovered = mouseX in btnX..(btnX + locateBtnWidth) && mouseY in locateBtnY..(locateBtnY + btnHeight)
+        graphics.fill(btnX, locateBtnY, btnX + locateBtnWidth, locateBtnY + btnHeight, if (locateHovered) 0xFF3A6A3A.toInt() else 0xFF2A4A2A.toInt())
+        graphics.text(font, Component.literal(locateLabel), btnX + 5, locateBtnY + 3, 0xFFFFFFFF.toInt(), false)
+
+        if (xaeroPresent) {
+            waypointButtonBounds = intArrayOf(btnX, waypointBtnY, btnX + waypointBtnWidth, waypointBtnY + btnHeight)
+            val waypointHovered = mouseX in btnX..(btnX + waypointBtnWidth) && mouseY in waypointBtnY..(waypointBtnY + btnHeight)
+            graphics.fill(btnX, waypointBtnY, btnX + waypointBtnWidth, waypointBtnY + btnHeight, if (waypointHovered) 0xFF3A4A6A.toInt() else 0xFF2A3A4A.toInt())
+            graphics.text(font, Component.literal(waypointLabel), btnX + 5, waypointBtnY + 3, 0xFFFFFFFF.toInt(), false)
+        } else {
+            waypointButtonBounds = null
+        }
     }
 
     private fun compactLocation(location: String): String {
@@ -504,7 +678,7 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
     private fun renderPreviewGridTooltip(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
         val selected = allEntries.find { it.id == selectedId } ?: return
         val items = previewItemsById[selected.id]
-            ?: selected.items.takeIf { it.size == 27 }
+            ?: selected.items.takeIf { it.size == SHULKER_SLOTS }
             ?: selected.cachedContentsNbt?.let(WTFClient::deserializeNbtToItems)
             ?: return
 
@@ -535,6 +709,11 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         graphics.setTooltipForNextFrame(font, item, mouseX, mouseY)
     }
 
+    override fun charTyped(event: net.minecraft.client.input.CharacterEvent): Boolean {
+        if (System.currentTimeMillis() < suppressCharsUntil) return true
+        return super.charTyped(event)
+    }
+
     override fun mouseClicked(mouseButtonEvent: MouseButtonEvent, bl: Boolean): Boolean {
         val mouseX = mouseButtonEvent.x
         val mouseY = mouseButtonEvent.y
@@ -558,8 +737,12 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             }
             val cBounds = clearAllButtonBounds
             if (cBounds != null && mouseX >= cBounds[0] && mouseX < cBounds[2] && mouseY >= cBounds[1] && mouseY < cBounds[3]) {
-                WTFClient.clearAllRecords()
-                onClose()
+                if (pendingClearAll) {
+                    WTFClient.clearAllRecords()
+                    onClose()
+                } else {
+                    pendingClearAll = true
+                }
                 return true
             }
         }
@@ -571,6 +754,28 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
                 return true
             }
             if (showInfo) { showInfo = false; return true }
+        }
+
+        if (button == 0 && mouseX >= leftPanelWidth) {
+            val lBounds = locateButtonBounds
+            val locateSelected = allEntries.find { it.id == selectedId }
+            if (lBounds != null && locateSelected != null &&
+                mouseX >= lBounds[0] && mouseX < lBounds[2] && mouseY >= lBounds[1] && mouseY < lBounds[3]
+            ) {
+                WTFClient.locateEntry(locateSelected)
+                return true
+            }
+        }
+
+        if (button == 0 && mouseX >= leftPanelWidth) {
+            val wBounds = waypointButtonBounds
+            val waypointSelected = allEntries.find { it.id == selectedId }
+            if (wBounds != null && waypointSelected != null &&
+                mouseX >= wBounds[0] && mouseX < wBounds[2] && mouseY >= wBounds[1] && mouseY < wBounds[3]
+            ) {
+                WTFClient.addXaeroWaypoint(waypointSelected)
+                return true
+            }
         }
 
         if (button == 0 && mouseX >= leftPanelWidth) {
@@ -609,7 +814,14 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
                 currentY += ShulkerSection.HEADER_HEIGHT
 
                 if (!section.isCollapsed) {
-                    val contentHeight = section.getTotalContentHeight()
+                    // Must be the section's actual allotted screen space
+                    // (sectionHeights, the dynamic per-frame budget render
+                    // uses), not its full unclamped content height - using
+                    // the latter sized this section's click region as if it
+                    // owned way more screen than it was actually given,
+                    // swallowing clicks meant for whatever section renders
+                    // next in that space.
+                    val contentHeight = sectionHeights[section] ?: 0
                     if (mouseY >= currentY && mouseY < currentY + contentHeight) {
                         val localY = (mouseY - currentY).toInt()
                         val entry = section.getEntryAtPosition(localY)
@@ -630,7 +842,14 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
 
     override fun mouseScrolled(mouseX: Double, mouseY: Double, horizontalAmount: Double, verticalAmount: Double): Boolean {
         if (mouseX < leftPanelWidth) {
-            var currentY = ShulkerSection.HEADER_HEIGHT
+            // Must start from the same baseline as the hover/render code
+            // (panelY + 14 title bar, not an arbitrary HEADER_HEIGHT*2) - the
+            // old base offset drifted further out of sync with each section
+            // accumulated, eventually pushing the last section/rows' true Y
+            // range outside what this check thought it was, silently eating
+            // scroll input right where it mattered most (the bottom of a list).
+            val panelY = searchHeight + 10
+            var currentY = panelY + 14
 
             for (type in ShulkerSectionType.entries) {
                 val section = sections[type] ?: continue
@@ -663,15 +882,30 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
         if (q.isEmpty()) return 1f
         if (t.contains(q)) return 1f
 
+        // Score by how tightly the match sits, not by how much of the name it
+        // covers. matched/t.length punished long names for being long, so a
+        // real hit scored low in "purple shulker box" while four letters picked
+        // out of it in order scored about the same - and anything above zero
+        // was listed. Span is how far the match had to stretch to collect the
+        // query: a tight run scores near 1, a scattered one falls off fast.
+        //
+        // ponytail: greedy leftmost matching, so the span is an upper bound,
+        // not the tightest possible one. Both are the same for the hits that
+        // matter here (a typo or a missing letter). Only reach for a real
+        // Smith-Waterman pass if a legitimate search starts scoring under
+        // MIN_MATCH.
         var qi = 0
-        var matched = 0
+        var first = -1
+        var last = -1
         for (ti in t.indices) {
             if (qi < q.length && t[ti] == q[qi]) {
+                if (first < 0) first = ti
+                last = ti
                 qi++
-                matched++
             }
         }
-        return if (qi == q.length) matched.toFloat() / t.length else 0f
+        if (qi < q.length) return 0f
+        return q.length.toFloat() / (last - first + 1)
     }
 
     private fun renderInfoButton(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
@@ -689,16 +923,19 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
 
     private fun renderInfoOverlay(graphics: GuiGraphicsExtractor) {
         val toggleKey = WTFClient.getToggleHappyKeyDisplayName()
-        val toggleLine = if (toggleKey != null)
-            "§7Press §f$toggleKey §7in-game to mark/unmark a shulker."
-        else
-            "§cSet a key for §ekey.wtf.toggle_happy§c in Controls."
+        // Read against toggleHappyForHoveredSlot() on 2026-09-15 (ticket 002).
+        // The three gestures listed are the three branches that function has;
+        // it had promised a fourth (look at a placed block) that was never
+        // built and fails silently, and it had never mentioned the stack
+        // refusal, the [LK] prefix, or what cyan really means.
         val lines = listOf(
             "§eWTF Shulker Tracker §7— How to use",
             "",
             "§f1. Mark a shulker box",
-            "   §7Hold or look at a shulker box, then press §f${toggleKey ?: "§c[key not set — see Controls]§7"}§7.",
-            "   §7Works on: box in hand, box in inventory, or §fplaced block§7 you're looking at.",
+            "   §7Press §f${toggleKey ?: "§c[key not set — see Controls]§7"}§7 with the box §funder your cursor§7 in any inventory,",
+            "   §7with it in your §fmain hand§7 and no screen open, or while the box's",
+            "   §7own screen is §fopen§7 — which is how you mark a placed one.",
+            "   §7One box at a time: a stack of two or more is refused.",
             "   §7Press the same key again to unmark it.",
             "",
             "§f2. Let the mod learn its contents",
@@ -708,15 +945,17 @@ class ShulkerGridScreen(entries: List<ShulkerEntry>) : Screen(Component.literal(
             "§f3. Use the list",
             "   §7This screen shows all marked shulkers grouped by location:",
             "   §f  Orange §7= placed block  §f  Green §7= your inventory",
-            "   §f  Cyan   §7= external storage  §f  Purple §7= ender chest",
+            "   §f  Cyan   §7= left your inventory  §f  Purple §7= ender chest",
             "   §f  Orange (item) §7= on the ground",
+            "   §7Cyan covers both: sitting in a chest, and §clost track of§7.",
+            "   §7A §c[LK]§7 row is the last place it was seen, not a sighting now.",
             "   §7Click a row to preview its contents. Search by name or item.",
             "   §7Matching items highlight §agreen§7 in the preview grid.",
             "",
             "§fTop bar toggles:",
             "   §fItem Glow §7— glowing outline on ground shulker items",
             "   §fMatch %   §7— show content match score next to each row",
-            "   §fBlur      §7— blur the background behind the preview panel",
+            "   §fBlur BG   §7— blur the background behind the preview panel",
         )
         val padH = 10
         val padV = 8

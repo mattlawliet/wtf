@@ -6,7 +6,51 @@ package dev.matt.wtf.client
 // "which signal wins", which is why every container/event type (ender chest
 // strip, server resync, hopper extraction) needed its own bugfix for what was
 // really one underlying problem. See memory: wtf-shulker-identity-model.
-internal object ShulkerIdentityResolver {
+// Not `internal`: the unit tests compile as a separate module.
+object ShulkerIdentityResolver {
+
+    // THE ladder. Every container path resolves through this and only this, so
+    // the order lives in one place instead of being re-derived per call site.
+    // Strongest signal first:
+    //
+    //   1. a live wtf:uuid stamp on the stack
+    //   2. this session's slot ledger for this exact slot
+    //   3. the persisted slot ledger for this chest
+    //   4. a tracked entry that already records this exact slot
+    //   5. the content-hash fingerprint
+    //
+    // Hash is deliberately last. It is the one signal that drifts - ender wipes
+    // the stamp on every reopen and server resync perturbs nested NBT - so
+    // letting it outrank slot continuity is exactly how two identical boxes
+    // swapped identities. The chest-open path used to run it first.
+    //
+    // ledgerHint/persistedHint must already be validated by the caller
+    // (ledgerEntryMatchesStack) because rejecting one also evicts it, and this
+    // object does not own those maps.
+    fun resolveChestSlot(
+        trackedShulkers: Map<String, WTFClient.ShulkerState>,
+        stampUUID: String?,
+        ledgerHint: String?,
+        persistedHint: String?,
+        chestState: String,
+        slotIndex: Int,
+        stackHash: String,
+        stackName: String,
+        stackType: String,
+        hasCustomName: Boolean,
+        claimed: Set<String>,
+        genericEmptyHash: String
+    ): String? {
+        stampUUID?.takeIf { it in trackedShulkers && it !in claimed }?.let { return it }
+        ledgerHint?.let { return it }
+        persistedHint?.let { return it }
+        resolveBySlotIndex(trackedShulkers, chestState, slotIndex, stackType, stackName, hasCustomName, claimed)
+            ?.let { return it }
+        return resolveTrackedChestStack(
+            trackedShulkers, stackHash, stackName, stackType, hasCustomName, claimed,
+            genericEmptyHash = genericEmptyHash, preferHint = persistedHint, slotIndex = slotIndex
+        )
+    }
 
     // True when a tracked entry plausibly IS this stack - used to validate a
     // ledger/persisted slot->uuid mapping before trusting it. A box that left
@@ -14,7 +58,6 @@ internal object ShulkerIdentityResolver {
     // (different) box in that slot inherits the old identity.
     fun ledgerEntryMatchesStack(
         entry: WTFClient.ShulkerState,
-        stackHash: String,
         stackName: String,
         stackType: String,
         hasCustomName: Boolean
@@ -34,6 +77,9 @@ internal object ShulkerIdentityResolver {
         return true
     }
 
+    // genericEmptyHash: the fingerprint an *empty* box of this type produces.
+    // Passed in rather than computed here so this object stays free of any
+    // Minecraft runtime dependency and can be unit-tested against plain maps.
     fun resolveTrackedChestStack(
         trackedShulkers: Map<String, WTFClient.ShulkerState>,
         stackHash: String,
@@ -41,6 +87,7 @@ internal object ShulkerIdentityResolver {
         stackType: String,
         hasCustomName: Boolean,
         alreadyResolved: Set<String>,
+        genericEmptyHash: String,
         preferHint: String? = null,
         slotIndex: Int = -1
     ): String? {
@@ -67,7 +114,7 @@ internal object ShulkerIdentityResolver {
         fun slotEligible(c: WTFClient.ShulkerState): Boolean =
             slotIndex < 0 || c.slotIndex < 0 || c.slotIndex == slotIndex
 
-        if (stackHash.isNotEmpty() && stackHash != WTFClient.genericEmptyHash(stackType)) {
+        if (stackHash.isNotEmpty() && stackHash != genericEmptyHash) {
             val hashMatches = trackedShulkers.values.filter {
                 it.uuid !in alreadyResolved &&
                     it.type == stackType &&
@@ -108,39 +155,9 @@ internal object ShulkerIdentityResolver {
                 it.state == chestState &&
                 it.slotIndex == slotIndex &&
                 it.type == stackType &&
-                ledgerEntryMatchesStack(it, "", stackName, stackType, hasCustomName)
+                ledgerEntryMatchesStack(it, stackName, stackType, hasCustomName)
         } ?: return null
         WTFClient.log("chest resolve: slot-matched $stackName ($chestState s$slotIndex) -> ${match.uuid}")
         return match.uuid
-    }
-
-    // Unnamed shulker boxes carry no identifying NBT, and a server resync
-    // (e.g. rejoining after a restart) can wipe wtf:uuid and/or perturb
-    // content-hash fingerprints (CUSTOM_DATA on nested boxes, etc). When
-    // none of that resolves a slot, re-link to the one previously-tracked
-    // entry for this chest of matching type — BUT only when there is exactly
-    // one such candidate. If there are two or more same-type unnamed boxes
-    // and only one candidate remains, picking randomly would swap identities
-    // across restarts; instead do nothing and let the persisted slot ledger
-    // accumulate correct mappings over time via manual opens.
-    fun resolveOrphanedChestSlot(
-        trackedShulkers: Map<String, WTFClient.ShulkerState>,
-        stackType: String,
-        hasCustomName: Boolean,
-        chestState: String,
-        coordStr: String,
-        dimStr: String,
-        alreadyResolved: Set<String>
-    ): String? {
-        if (hasCustomName) return null
-        val candidates = trackedShulkers.values.filter {
-            it.uuid !in alreadyResolved &&
-                it.type == stackType &&
-                it.state == chestState &&
-                it.coords == coordStr &&
-                it.dim == dimStr
-        }
-        if (candidates.size != 1) return null
-        return candidates[0].uuid.also { WTFClient.log("chest resolve: orphan-slot re-linked unnamed $stackType to tracked UUID $it (unambiguous)") }
     }
 }

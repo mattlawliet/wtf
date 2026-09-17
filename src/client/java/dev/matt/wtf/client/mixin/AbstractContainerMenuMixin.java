@@ -19,10 +19,15 @@ public class AbstractContainerMenuMixin {
         }
     }
 
+    // slotId and button are forwarded because a SWAP (F, or a number key) names
+    // both slots it exchanges - the clicked one and the hotbar index, with 40
+    // meaning the offhand. Inferring that from before/after snapshots is guessing
+    // about the one gesture that moves two stacks in a single click.
     @Inject(method = "clicked", at = @At("TAIL"))
     private void wtf$postClick(int slotId, int button, ContainerInput input, Player player, CallbackInfo ci) {
         if (player instanceof LocalPlayer) {
-            WTFClient.INSTANCE.onMenuClickPost((AbstractContainerMenu) (Object) this);
+            WTFClient.INSTANCE.onMenuClickPost(
+                (AbstractContainerMenu) (Object) this, slotId, button, input == ContainerInput.SWAP);
         }
     }
 }
