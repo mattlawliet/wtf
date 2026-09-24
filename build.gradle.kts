@@ -30,6 +30,34 @@ loom {
 	}
 }
 
+// Scenario tests that drive a real client against a real dedicated server in
+// one JVM: `xvfb-run -a ./gradlew runClientGameTest` (see src/gametest). They
+// are what "tested in the dev client" means without a person at the keyboard -
+// the server wipes stamps exactly as a live one does, which singleplayer never
+// shows. Results land in build/run/clientGameTest/wtf-scenarios.txt.
+fabricApi {
+	configureTests {
+		createSourceSet = true
+		modId = "wtf-gametest"
+		enableGameTests = false
+		enableClientGameTests = true
+		eula = true
+	}
+}
+
+// WTF_GAMETEST_MODS=<dir> loads every jar in <dir> beside WTF for the run -
+// the same scenarios again with the inventory mods he actually plays with
+// (ticket 009). 26.x is unobfuscated, so Modrinth jars need no remapping.
+tasks.named("runClientGameTest") {
+	doFirst {
+		val dir = System.getenv("WTF_GAMETEST_MODS") ?: return@doFirst
+		project.copy {
+			from(dir) { include("*.jar") }
+			into(layout.buildDirectory.dir("run/clientGameTest/mods"))
+		}
+	}
+}
+
 // ShulkerIdentityResolver is pure (maps in, uuid out), so its tests run on a
 // plain JVM - no Minecraft bootstrap. Wire the client source set onto the test
 // classpath so they can see it.

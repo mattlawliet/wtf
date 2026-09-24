@@ -11,6 +11,8 @@
 		"ClientPacketListenerMixin",
 		"AbstractContainerMenuMixin",
 		"LocalPlayerMixin",
+		"ClientCommonPacketListenerImplMixin",
+		"MultiPlayerGameModeMixin",
 		"EntityAccessor"
 	],
 	"injectors": {

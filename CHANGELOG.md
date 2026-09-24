@@ -1,5 +1,31 @@
 # Changelog
 
+## 2.4.2
+
+Identical boxes, fast clicking and saving, found by playing and by automated
+tests: client gametests that drive a real client against a real dedicated
+server (24 scenarios), and a random-walk fuzzer that moves boxes through every
+place a box can go and checks the mod against the server after every step.
+
+- **Identical boxes stay apart.** Marking one no longer marks its twin, moving
+  one no longer moves the mark, and the mark survives hoppers, relogs, the
+  crafting grid and itemscroller's alt-move.
+- **No ghost box on the cursor after fast clicks.** Every click sent the server
+  a hash that included the mod's own stamp, so the server "corrected" every
+  click, and a correction arriving after the next click overwrote it.
+- **Two chests side by side are two chests**, and a double chest in a wall of
+  double chests keeps one identity whichever half you open.
+- **Placing, breaking and picking up a marked box** keeps its mark.
+- **F with no screen open is tracked**; two marked boxes swapped between the
+  hands keep their own records.
+- **Dyeing a marked box** keeps its mark and updates its colour.
+- **Item counts are part of a box's fingerprint**, so a half-full box is no
+  longer taken for a full one. Saves are upgraded automatically (format v18).
+- **A crash while saving can no longer lose the newest save**, and a corrupt
+  save is set aside as `moods.json.corrupt` instead of overwriting the backup.
+
+Tested with itemscroller, tweakeroo, malilib and peek installed.
+
 ## 2.4.1
 
 Two defects from the first played session on 2.4.0, both in the anvil.

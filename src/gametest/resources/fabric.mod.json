@@ -1,0 +1,23 @@
+{
+	"schemaVersion": 1,
+	"id": "wtf-gametest",
+	"version": "1.0.0",
+	"name": "WTF scenario tests",
+	"environment": "*",
+	"entrypoints": {
+		"fabric-client-gametest": [
+			{
+				"value": "dev.matt.wtf.gametest.WtfScenarios",
+				"adapter": "kotlin"
+			},
+			{
+				"value": "dev.matt.wtf.gametest.WtfFuzz",
+				"adapter": "kotlin"
+			}
+		]
+	},
+	"depends": {
+		"wtf": "*",
+		"fabric-client-gametest-api-v1": "*"
+	}
+}

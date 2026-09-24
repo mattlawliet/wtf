@@ -9,6 +9,8 @@ import kotlin.test.assertNull
 class ShulkerIdentityResolverTest {
 
     private val EMPTY_HASH = "generic-empty"
+    private val HERE = "0,0,0"
+    private val THERE = "5,0,5"
 
     private fun entry(
         uuid: String,
@@ -18,10 +20,14 @@ class ShulkerIdentityResolverTest {
         type: String = "minecraft:shulker_box",
         slotIndex: Int = -1,
         happy: Boolean = false,
-        firstSeen: Long = 0
+        firstSeen: Long = 0,
+        coords: String = "",
+        lastKnown: Boolean = false,
     ) = WTFClient.ShulkerState(
         uuid = uuid,
         state = state,
+        coords = coords,
+        lastKnown = lastKnown,
         name = name,
         contentHash = hash,
         type = type,
@@ -96,10 +102,13 @@ class ShulkerIdentityResolverTest {
         name: String = "Shulker Box",
         claimed: Set<String> = emptySet(),
         hint: String? = null,
-        slotIndex: Int = -1
+        slotIndex: Int = -1,
+        chestState: String = "ex-inv",
+        chestCoords: String = HERE,
     ) = ShulkerIdentityResolver.resolveTrackedChestStack(
         map, hash, name, "minecraft:shulker_box", false, claimed,
-        genericEmptyHash = EMPTY_HASH, preferHint = hint, slotIndex = slotIndex
+        genericEmptyHash = EMPTY_HASH, preferHint = hint, slotIndex = slotIndex,
+        chestState = chestState, chestCoords = chestCoords,
     )
 
     @Test
@@ -135,8 +144,61 @@ class ShulkerIdentityResolverTest {
 
     @Test
     fun `a candidate pinned to a different slot is not this box`() {
-        val map = tracked(entry("a", hash = "h", slotIndex = 20))
+        val map = tracked(entry("a", state = "ex-inv", coords = HERE, hash = "h", slotIndex = 20))
         assertNull(resolve(map, "h", slotIndex = 5))
+    }
+
+    // Reported 2026-09-24: a hopper carried a marked box from slot 0 of one
+    // chest to slot 3 of the next, and the slot rule refused it there.
+    @Test
+    fun `a slot in ANOTHER container does not rule a candidate out`() {
+        val map = tracked(entry("a", state = "ex-inv", coords = THERE, hash = "h", slotIndex = 0, lastKnown = true))
+        assertEquals("a", resolve(map, "h", slotIndex = 3))
+    }
+
+    @Test
+    fun `slot continuity only holds inside the same container`() {
+        val map = tracked(entry("a", state = "ex-inv", coords = THERE, slotIndex = 0, name = "Shulker Box"))
+        assertNull(ShulkerIdentityResolver.resolveBySlotIndex(
+            map, "ex-inv", 0, "minecraft:shulker_box", "Shulker Box", false, emptySet(), HERE))
+        assertEquals("a", ShulkerIdentityResolver.resolveBySlotIndex(
+            map, "ex-inv", 0, "minecraft:shulker_box", "Shulker Box", false, emptySet(), THERE))
+    }
+
+    // A box still placed as a block is not the one in this chest, however alike.
+    @Test
+    fun `a record whose box is still placed is not a candidate`() {
+        val map = tracked(
+            entry("placed", state = "block", coords = "7,7,7", hash = "h", happy = true, firstSeen = 1),
+            entry("gone", state = "ex-inv", coords = "", hash = "h", firstSeen = 2),
+        )
+        val got = ShulkerIdentityResolver.resolveTrackedChestStack(
+            map, "h", "Shulker Box", "minecraft:shulker_box", false, emptySet(),
+            genericEmptyHash = EMPTY_HASH, chestState = "ex-inv", chestCoords = HERE,
+            stillWhereRecorded = { it.state == "block" },
+        )
+        assertEquals("gone", got)
+    }
+
+    // WtfFuzz seed 17: an ender slot changed where the mod could not see.
+    @Test
+    fun `slot continuity refuses a box with different contents`() {
+        val map = tracked(entry("old", state = "enderchest", slotIndex = 0, name = "Shulker Box", hash = "old-contents", happy = true))
+        assertNull(ShulkerIdentityResolver.resolveBySlotIndex(
+            map, "enderchest", 0, "minecraft:shulker_box", "Shulker Box", false, emptySet(), "", "new-contents"))
+        assertEquals("old", ShulkerIdentityResolver.resolveBySlotIndex(
+            map, "enderchest", 0, "minecraft:shulker_box", "Shulker Box", false, emptySet(), "", "old-contents"))
+    }
+
+    // The same report's second half: the unmarked twin still sitting in the
+    // chest it was seen in must not beat the one that vanished and came back.
+    @Test
+    fun `a vanished record beats one last seen sitting in another chest`() {
+        val map = tracked(
+            entry("twin", state = "ex-inv", coords = THERE, hash = "h", slotIndex = 19, firstSeen = 1),
+            entry("lost", state = "ex-inv", coords = "9,9,9", hash = "h", slotIndex = 20, firstSeen = 2, lastKnown = true),
+        )
+        assertEquals("lost", resolve(map, "h", slotIndex = 3))
     }
 
     @Test

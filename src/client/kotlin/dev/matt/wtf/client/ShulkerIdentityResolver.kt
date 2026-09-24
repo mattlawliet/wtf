@@ -39,18 +39,34 @@ object ShulkerIdentityResolver {
         stackType: String,
         hasCustomName: Boolean,
         claimed: Set<String>,
-        genericEmptyHash: String
+        genericEmptyHash: String,
+        // "x,y,z" of the open container; unused for the ender chest, which is
+        // one container wherever it is opened.
+        chestCoords: String = "",
+        // True for a record whose box is visibly still where it says - placed,
+        // or on the ground. Supplied by the caller so this stays pure.
+        stillWhereRecorded: (WTFClient.ShulkerState) -> Boolean = { false },
     ): String? {
         stampUUID?.takeIf { it in trackedShulkers && it !in claimed }?.let { return it }
         ledgerHint?.let { return it }
         persistedHint?.let { return it }
-        resolveBySlotIndex(trackedShulkers, chestState, slotIndex, stackType, stackName, hasCustomName, claimed)
+        resolveBySlotIndex(trackedShulkers, chestState, slotIndex, stackType, stackName, hasCustomName, claimed, chestCoords, stackHash)
             ?.let { return it }
         return resolveTrackedChestStack(
             trackedShulkers, stackHash, stackName, stackType, hasCustomName, claimed,
-            genericEmptyHash = genericEmptyHash, preferHint = persistedHint, slotIndex = slotIndex
+            genericEmptyHash = genericEmptyHash, preferHint = persistedHint, slotIndex = slotIndex,
+            chestState = chestState, chestCoords = chestCoords, stillWhereRecorded = stillWhereRecorded
         )
     }
+
+    // A slot number only means something inside its own container. Both
+    // slot-based rules below compared slotIndex alone, so a record at slot 0
+    // of one chest matched slot 0 of any other - and, the other way round, a
+    // record whose slot differed was excluded from a chest it had never been
+    // in. A marked box a hopper carried from slot 0 of one chest to slot 3 of
+    // the next was refused there for exactly that (reported 2026-09-24).
+    fun inContainer(entry: WTFClient.ShulkerState, chestState: String, chestCoords: String): Boolean =
+        entry.state == chestState && (chestState == "enderchest" || entry.coords == chestCoords)
 
     // True when a tracked entry plausibly IS this stack - used to validate a
     // ledger/persisted slot->uuid mapping before trusting it. A box that left
@@ -89,7 +105,10 @@ object ShulkerIdentityResolver {
         alreadyResolved: Set<String>,
         genericEmptyHash: String,
         preferHint: String? = null,
-        slotIndex: Int = -1
+        slotIndex: Int = -1,
+        chestState: String = "",
+        chestCoords: String = "",
+        stillWhereRecorded: (WTFClient.ShulkerState) -> Boolean = { false },
     ): String? {
         // Deterministic disambiguation when several candidates are equally
         // valid: the persisted-ledger hint for this slot wins, then a candidate
@@ -112,17 +131,26 @@ object ShulkerIdentityResolver {
         // identical-content box pinned to slot 20 gets claimed by slot 5 simply
         // because it was the only hash candidate left.
         fun slotEligible(c: WTFClient.ShulkerState): Boolean =
-            slotIndex < 0 || c.slotIndex < 0 || c.slotIndex == slotIndex
+            slotIndex < 0 || c.slotIndex < 0 || c.slotIndex == slotIndex || !inContainer(c, chestState, chestCoords)
+
+        // A record whose box the mod last saw sitting in ANOTHER container is
+        // the worst candidate, not an equal one: that box is presumably still
+        // there. A box that vanished (lastKnown) or has no known place is the
+        // one owed. Only a tiebreak - with nothing better, a box a hopper moved
+        // unseen still has to be claimable.
+        fun seenElsewhere(c: WTFClient.ShulkerState): Boolean =
+            (c.state == "ex-inv" || c.state == "enderchest") && !c.lastKnown &&
+                !inContainer(c, chestState, chestCoords) && (c.state == "enderchest" || c.coords.isNotEmpty())
 
         if (stackHash.isNotEmpty() && stackHash != genericEmptyHash) {
             val hashMatches = trackedShulkers.values.filter {
                 it.uuid !in alreadyResolved &&
                     it.type == stackType &&
                     it.contentHash == stackHash &&
-                    slotEligible(it) &&
+                    slotEligible(it) && !stillWhereRecorded(it) &&
                     (it.state == "inv" || it.state == "item" || it.state == "block" || it.state == "ex-inv" || it.state == "enderchest")
             }
-            val hashMatch = pick(hashMatches)
+            val hashMatch = pick(hashMatches.filterNot(::seenElsewhere).ifEmpty { hashMatches })
             if (hashMatch != null) {
                 WTFClient.log("chest resolve: hash-matched $stackName to tracked UUID ${hashMatch.uuid}")
                 return hashMatch.uuid
@@ -147,12 +175,21 @@ object ShulkerIdentityResolver {
         stackType: String,
         stackName: String,
         hasCustomName: Boolean,
-        alreadyResolved: Set<String>
+        alreadyResolved: Set<String>,
+        chestCoords: String = "",
+        stackHash: String = "",
     ): String? {
         if (slotIndex < 0) return null
         val match = trackedShulkers.values.firstOrNull {
             it.uuid !in alreadyResolved &&
-                it.state == chestState &&
+                inContainer(it, chestState, chestCoords) &&
+                // Same slot, different contents: a different box. The ender chest
+                // changes where the mod cannot see - another client, a plugin -
+                // and an unnamed record used to latch onto whatever unnamed box
+                // now filled its slot, mark and all (found by WtfFuzz, seed 17).
+                // The fingerprint no longer drifts (stamps are stripped before
+                // hashing, counts are in since v18), so it can be asked.
+                (stackHash.isEmpty() || it.contentHash.isEmpty() || it.contentHash == stackHash) &&
                 it.slotIndex == slotIndex &&
                 it.type == stackType &&
                 ledgerEntryMatchesStack(it, stackName, stackType, hasCustomName)
